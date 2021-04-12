@@ -1,0 +1,106 @@
+---
+title: "Implementing curated info"
+output: html_notebook
+---
+
+
+```{r setup, include=TRUE}
+library(tibble)
+library(ggplot2)
+library(dplyr)
+library(cowplot)
+library(readr)
+library(maps)
+library(mapproj)
+library(ggrepel)
+library(tidyr)
+library(lubridate)
+
+source("~/Google Drive/Documents/Kat-colors/Kat-colors.R")
+
+```
+
+
+```{r}
+# curated output of clean_extracted_drugs pre bad_names was added.
+curated_data <- read.csv("KATdb_all_trials_v2020-07-06 - all_trials-curated-2020-09-23.csv")
+```
+
+
+```{r}
+missing_names <- curated_data$missing.drug[curated_data$isCorrect == "F"]
+missing_names <- curated_data$missing.drug
+missing_names <- trimws(unlist(strsplit(missing_names, split = "\\||,")))
+sort(table(tolower(missing_names)), decreasing = T)
+length(unique(tolower(missing_names)))
+
+additional_names_for_KATdb <- sort(unique(tolower(missing_names)))
+save(additional_names_for_KATdb, file =paste0("curated_missing_names", Sys.Date(), ".RData"))
+
+extra_names <- curated_data$extra.drug[curated_data$isCorrect == "F"]
+extra_names <- curated_data$extra.drug
+extra_names <- trimws(unlist(strsplit(extra_names, split = "\\||,")))
+sort(table(tolower(extra_names)), decreasing = T)
+length(unique(tolower(extra_names)))
+
+remove_names_from_trials <- as.data.frame(sort(table(tolower(extra_names)), decreasing = T))
+
+
+
+
+# get frequency of drugs from title/intervention
+
+
+# join scientific title + intervention and remove duplicates between the two
+# join
+all_names_from_trials <- curated_data %>% mutate(drugs = paste0(drugs...Scientific.title, "|", drugs...Intervention), 
+                                                 drugs = sub("^\\|$|\\|$|^\\|", "", drugs))
+drugs <- stringr::str_split_fixed(all_names_from_trials$drugs, "\\|", n=100)
+drugs <- drugs[, !colSums(drugs=="") == nrow(drugs)]
+drugs <- tolower(trimws(drugs))
+# remove duplicates
+drugs <- t(apply(drugs, 1, FUN= function(x){x <- c(unique(x), rep("", ncol(drugs)-length(unique(x))))}))
+drugs <- drugs[, !colSums(drugs=="") == nrow(drugs)]
+dim(drugs)
+drugs[1:5, 1:5]
+
+# count frequency
+drugss <- as.character(drugs)
+drugss <- drugss[drugss!=""]
+trial_drugs <- as.data.frame(table(drugss))
+
+# make a new tidy version of scientific title + intervention drugs
+drugs_list <- apply(drugs, 1, paste0,  collapse = "|")
+drugs_list <- gsub("\\|{2,}", "\\|", drugs_list)
+drugs_list <- gsub("^\\||\\|$", "", drugs_list)
+all_names_from_trials <- all_names_from_trials %>% mutate(drugs = drugs_list)
+
+
+# consider cleaning when they are in a matrix, so you can delete the whole cell, not just part? 
+
+# join drugss + remove names
+drugs_freq <- trial_drugs %>% rename("Var1" = "drugss", "Freq_all" = "Freq") %>% right_join(remove_names_from_trials) %>% 
+  mutate(wrong = Freq/Freq_all)
+
+# delete drugs that are wrong more than 50% of the time + drugs with high frequency of 10
+drugs_freq <- drugs_freq %>% 
+    mutate(keep = ifelse(wrong > 0.5, F, T), 
+           keep = ifelse(Freq > 10, F, keep), 
+           keep = ifelse(is.na(Freq_all), F, keep)) %>% 
+    arrange(keep, desc(Freq_all), desc(wrong), desc(Freq),)
+# now manually curate the generic names
+write.csv(drugs_freq, paste0("wrong_names_COVID_trials", Sys.Date(), ".csv"))
+```
+
+```{r}
+drugs_freq <- read.csv("wrong_names_COVID_trials2020-09-23_curated.csv") #manual curation added
+
+bad_drugs <- drugs_freq$Var1[drugs_freq$manual_curation == F]
+save(bad_drugs, file =paste0("bad_names", Sys.Date(), ".RData")) #use in clean_extracted_drugs.RData
+
+drugs[1:10, 1:5]
+drugs_clean <- drugs
+drugs_clean[grepl(paste0(bad_drugs, collapse = "$|^"), drugs_clean)] <- ""
+drugs_clean[1:10, 1:5]
+```
+

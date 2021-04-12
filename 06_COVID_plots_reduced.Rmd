@@ -1,0 +1,1302 @@
+---
+title: "COVID trial plots"
+output: html_notebook
+---
+
+#Figure Plan
+1. world maps
+2. twitter vs total trials
+3. drug diversity
+
+```{r setup, include=TRUE}
+library(tibble)
+library(ggplot2)
+library(cowplot)
+library(readr)
+library(maps)
+library(ggrepel)
+library(tidyr)
+library(lubridate)
+library(dplyr)
+library(forcats)
+library(countrycode)
+
+source("~/Google Drive/Documents/Kat-colors/Kat-colors.R")
+#
+
+version <- "v2020-09-04_cur"
+
+theme_set(theme_classic())
+
+```
+
+Prep world data
+```{r world data}
+# world coordinates
+world <- map_data("world") %>% filter(region != "Antarctica")
+
+# gapminder population data
+pop_data <- read.csv("data/gapminder_population_total.csv") #gapminder https://www.gapminder.org/data/
+pop_data <- pop_data %>% select(country, X2020)
+colnames(pop_data) <- c("country", "pop")
+head(pop_data)
+
+pop_data$continent <- countrycode(sourcevar = pop_data[, "country"],
+                            origin = "country.name",
+                            destination = "continent")
+
+# curate pop_data to match world coordinates 
+pop_data$country[grepl("Congo, Dem\\. Rep", pop_data$country)] <- "Democratic Republic of the Congo"
+pop_data$country[grepl("Congo, Rep", pop_data$country)] <- "Republic of Congo"
+pop_data$country[grepl("Cote d'Ivoire", pop_data$country)] <- "Ivory Coast"
+pop_data$country[grepl("Holy See", pop_data$country)] <- "Vatican"
+pop_data$country[grepl("Kyrgyz Republic", pop_data$country)] <- "Kyrgyzstan"
+pop_data$country[grepl("Lao", pop_data$country)] <- "Laos"
+pop_data$country[grepl("Micronesia, Fed\\. Sts", pop_data$country)] <- "Micronesia"
+pop_data$country[grepl("North Macedonia", pop_data$country)] <- "Macedonia"
+pop_data$country[grepl("Slovak Republic", pop_data$country)] <- "Slovakia"
+pop_data$country[grepl("St\\. Kitts and Nevis", pop_data$country)] <- "Saint Kitts and Nevis" 
+pop_data$country[grepl("St\\. Lucia", pop_data$country)] <- "Saint Lucia"
+pop_data$country[grepl("St\\. Vincent and the Grenadines", pop_data$country)] <- "Saint Vincent and Grenadines"
+pop_data$country[grepl("United Kingdom", pop_data$country)] <- "UK"
+pop_data$country[grepl("United States", pop_data$country)] <- "USA"
+world$region[grepl("Barbuda", world$region)] <- "Antigua and Barbuda"
+world$region[grepl("Antigua", world$region)] <- "Antigua and Barbuda"
+world$region[grepl("Trinidad", world$region)] <- "Trinidad and Tobago"
+world$region[grepl("Tobago", world$region)] <- "Trinidad and Tobago"
+world$region[grepl("Nevis", world$region)] <- "Saint Kitts and Nevis"
+world$region[grepl("Saint Kitts", world$region)] <- "Saint Kitts and Nevis"
+world$region[grepl("Saint Vincent", world$region)] <- "Saint Vincent and Grenadines"
+world$region[grepl("Grenadines", world$region)] <- "Saint Vincent and Grenadines"
+
+# join 
+world <- world %>% full_join(pop_data, by = c("region" = "country"))
+head(world)
+
+world$region[grepl("Macedonia", world$region)] <- "North Macedonia"
+
+world %>% filter(is.na(pop) ) %>% distinct(region, pop)
+world %>% filter( is.na(group)) %>% distinct(region, pop)
+
+```
+
+```{r world deaths}
+
+download.file("raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_global.csv", destfile = "data/time_series_covid19_deaths_global.csv")
+
+
+covid_deaths <- read_csv("data/time_series_covid19_deaths_global.csv")%>% 
+  dplyr::rename(country = `Country/Region`) %>% 
+  tidyr::gather(Date, Cases, 5:last_col()) %>% 
+mutate(Date=as.Date(Date,"%m/%d/%y")) %>% 
+    filter(Date <= as.Date("2020-09-04"))
+
+
+total_deaths <- covid_deaths %>%
+  group_by(country) %>%
+    filter(Date == max(Date)) %>% 
+  summarise(total_deaths = sum(Cases)) %>% 
+  ungroup()
+
+
+as.data.frame(total_deaths[!total_deaths$country %in% world$region ,])
+
+# match country names
+total_deaths$country <- sub("Korea, South", "South Korea", total_deaths$country)
+total_deaths$country <- sub("Czechia$", "Czech Republic", total_deaths$country)
+total_deaths$country <- sub("Eswatini$", "Swaziland", total_deaths$country)
+total_deaths$country <- sub("US$", "USA", total_deaths$country)
+total_deaths$country <- sub("United Kingdom$", "UK", total_deaths$country)
+total_deaths$country <- sub("West Bank and Gaza$", "Palestine", total_deaths$country)
+total_deaths$country <- sub("Saint Vincent and the Grenadines$", "Saint Vincent and The Grenadines", total_deaths$country)
+total_deaths$country <- sub("Taiwan\\*", "Taiwan", total_deaths$country)
+total_deaths$country <- sub("Cote d'Ivoire", "Ivory Coast", total_deaths$country)
+total_deaths$country <- sub("Cabo Verde", "Cape Verde", total_deaths$country)
+total_deaths$country <- sub("Burma", "Myanmar", total_deaths$country)
+total_deaths$country <- sub("Congo \\(Brazzaville\\)", "Republic of Congo", total_deaths$country)
+total_deaths$country <- sub("Congo \\(Kinshasa\\)", "Democratic Republic of the Congo", total_deaths$country)
+
+
+as.data.frame(total_deaths[!total_deaths$country %in% world$region ,])
+
+# join with world data
+deaths_per_country <- left_join(total_deaths, world, by = c("country" = "region")) %>%
+    mutate(across(.cols = c(lat, long, total_deaths), .fns = as.numeric))
+
+deaths_per_country$total_deaths[is.na(deaths_per_country$total_deaths)] <- 0
+deaths_per_country$pop[is.na(deaths_per_country$pop)] <- 0
+deaths_per_country$deaths_per_pop <- deaths_per_country$total_deaths/deaths_per_country$pop
+
+```
+
+```{r import trial data}
+
+trials <- readr::read_csv("data/COVID19-web-2020-09-04.csv", 
+                          col_types = cols(`results date posted` = col_character(), 
+                                           `results url link` = col_character(),
+                                           `results yes no` = col_character()))
+
+
+load(paste0("data/text-mined-drugs-trials_", "2020-11-11", ".RData"))
+head(df)
+df$TrialID <- trials$TrialID
+colnames(df) <- trials %>% select(TrialID, `Public title`, `Scientific title`, Intervention) %>% as.data.frame() %>% colnames()
+
+load("data/clean_trials.RData")
+
+number_of_all_trials <- nrow(trials)
+```
+
+```{r clean trial data}
+head(trials)
+
+# set registration date
+trials$Date <- as.Date(as.character(trials$`Date registration3`), origin = "20200127", format = "%Y%m%d")
+# keep only post Jan 1st 2020
+trials <- trials %>% 
+  filter(Date >= as.Date("2020-01-01")) 
+
+# clean target size column `Target size`
+trials$`Target size`[grepl("19", trials$`Target size`)]
+trials$size <- gsub("COVID-19|COVID-2019|(200 in each arm)", "", trials$`Target size`)
+trials$size[grepl("19", trials$size)]
+trials$size[grepl("each", trials$size)]
+trials$size <- gsub("^.*?:|;.*?:", ";", trials$size)
+
+# get trial size
+set.seed(29072020)
+x <- sample(trials$size, 100)
+x <- trials$size
+pattern <- "[0-9]{1,}"
+found_matches <- regmatches(x , gregexpr(pattern, x , perl = T, ignore.case = T))
+cur <- lapply(found_matches, paste0, collapse = "|")
+sizes <- unlist(cur)
+for (i in 1:length(sizes)){
+if (grepl("\\|", sizes[i])){
+  split_x <- strsplit(sizes[i], "\\|")
+  print(split_x)
+  sum_x <- sum(as.numeric(unlist(split_x)))
+  print(sum_x)
+  sizes[i] <- sum_x
+  }
+}
+trials$size <- as.numeric(sizes)
+head(select(trials, `Target size`, size), 50)
+
+# clean type of trial `Study design`
+trials$isRandomized <- grepl("random", trials$`Study design`, ignore.case = T)
+trials$isRandomized[trials$isRandomized] <- !grepl("Randomi[sz]ed: No|Non-randomi[sz]ed|Randomi[sz]ation: N/A|not randomi[zs]ed|Quasi-randomized", trials$`Study design`[trials$isRandomized], ignore.case = T)
+
+x <- as.data.frame(table(trials$`Study design`, trials$isRandomized))
+x <- x %>% filter(Freq != 0)
+
+
+# match country to world data from maps
+trials$Country <- trimws(sub(";.*", "", trials$Countries))
+head(sort(table(trials$Country)))
+trials$Country <- sub(",.*| \\(.*|The |n Federation", "", trials$Country)
+trials$Country <- sub("People's Republic of China|china|China\\?|Chinese|Chian", "China", trials$Country)
+trials$Country <- sub("United States$", "USA", trials$Country)
+trials$Country <- sub("United Kingdom$", "UK", trials$Country)
+trials$Country <- sub("Korea$", "South Korea", trials$Country)
+trials$Country <- sub("Czechia$", "Czech Republic", trials$Country)
+trials$Country <- sub("Cote Divoire|Côte D'Ivoire", "Ivory Coast", trials$Country)
+trials$Country <- sub("MALAYSIA", "Malaysia", trials$Country)
+trials$Country <- sub("South America", NA, trials$Country)
+# trials$Country <- sub("Serbia$", "Serbia and Montenegro", trials$Country)
+
+
+
+table(is.na(trials$Countries))
+
+number_of_all_trials_after_jan <- nrow(trials)
+
+df <- df %>% 
+  filter(df$TrialID %in% trials$TrialID)
+```
+
+```{r}
+# join drugs and trial data
+drugs <- stringr::str_split_fixed(df$drugs, "\\|", n=100)
+rownames(drugs) <- df$TrialID
+drugs <- drugs[, !colSums(drugs=="") == nrow(drugs)]
+drugs <- as.data.frame(tolower(trimws(drugs)))
+dim(drugs)
+
+drugs <- rownames_to_column(drugs, var = "TrialID")
+
+trials$drugs <- df$drugs
+drugs <- left_join(select(trials, TrialID, Date, Country, isRandomized, size, drugs), drugs)
+
+drugs <- pivot_longer(drugs, 7:ncol(drugs), values_to = "Drug") %>% select(-name) %>% filter(Drug != "")
+
+drugs_date <- drugs
+```
+
+
+#world plots
+
+```{r --world trials - fix: clean first, plot later}
+# TO DO --- clean up the drugs first, then plot trials!!!!! 
+# trial per country
+drug_trials <- trials %>% 
+    filter(drugs != "") %>% 
+    select(TrialID, Country, Date, Intervention, isRandomized, size, drugs)
+
+drug_trials_country <- drug_trials[!is.na(drug_trials$Country),]
+
+# save for later
+number_of_drug_trials <- nrow(drug_trials)
+number_of_drug_trials_with_country <- nrow(drug_trials_country)
+
+drug_trials_country <- select(drug_trials_country, TrialID, drugs, Country, Date, size)
+
+# check country names that don't match
+as.data.frame(drug_trials_country$Country[!drug_trials_country$Country %in% world$region])
+
+# top trial countries
+head(sort(table(drug_trials_country$Country), decreasing = T), 20)
+
+trials_per_country <- drug_trials_country %>%
+    select(Country) %>%
+    group_by(Country) %>%
+    summarise(n_trials = n())
+
+trials_per_country_poly <- left_join(world, trials_per_country, by = c("region" = "Country"))
+trials_per_country_poly$n_trials[is.na(trials_per_country_poly$n_trials)] <- 0
+
+p1 <- ggplot() +
+    geom_polygon(data = trials_per_country_poly, aes(x=long, y=lat, group=group, fill = n_trials), alpha = 1) +
+    # coord_map() +
+    theme_void() +
+  coord_fixed(ratio = 1.2) +
+    scale_fill_gradient2(low = "grey85", mid = BRC_col_20[2+2*8], high = BRC_col[2], midpoint = 180, na.value = "grey85")  +
+  # scale_fill_viridis(discrete = F, end = 0.3, na.value = "grey80")  +
+  labs(fill = "Number of drug trials")+
+    theme(plot.background = element_rect(fill = "white", color = NA), 
+          panel.background = element_rect(fill = "white", color = NA), 
+      legend.background = element_rect(fill = "white", color = NA), 
+      text = element_text(colour = "black"), aspect.ratio=1/2.2)
+
+p1
+```
+
+```{r ---world patients in trials}
+
+# patients in trials per country
+patients_per_country <- drug_trials_country %>% 
+  group_by(Country) %>% 
+  summarise(n_patients = sum(as.numeric(size), na.rm = T)) %>%
+    left_join(select(trials_per_country, Country, n_trials)) %>%
+    left_join(distinct(select(world, region, pop)), by = c("Country" = "region")) %>% 
+    mutate(patients_per_100k = n_patients/pop*1e5)
+    
+
+as.data.frame(patients_per_country$Country[!patients_per_country$Country %in% world$region])
+ 
+patients_per_country_poly <- left_join(world, patients_per_country, by = c("region" = "Country"))
+
+patients_per_country_poly$n_patients[is.na(patients_per_country_poly$n_patients)] <- 0
+
+```
+
+```{r save country stats}
+# add deaths to pop df
+country_stats <- patients_per_country %>%
+    left_join(total_deaths, by = c("Country" = "country")) %>% 
+    mutate(deaths_per_100k = total_deaths/pop*1e5) 
+
+country_stats <- country_stats %>%
+    mutate(perc_trials = round(n_trials/number_of_drug_trials, 3),
+           deaths_per_100k = round(deaths_per_100k, 2),
+           patients_per_100k = round(patients_per_100k, 2))
+
+country_stats %>% write.csv("output/Fig1_country_stats.csv", row.names = F)
+```
+
+```{r}
+
+country_stats %>%
+  left_join(select(pop_data, country, continent), by = c("Country" = "country")) %>%
+  filter(!is.na(continent)) %>%
+  ggplot(aes(x = deaths_per_100k, y=n_trials, size = n_patients/1e5, col = continent)) +
+  scale_color_viridis(end = 0.8) +
+  geom_point(alpha = 0.7) 
+
+top_country <- country_stats %>%
+  left_join(select(pop_data, country, continent), by = c("Country" = "country")) %>%
+  filter(!is.na(continent)) %>%
+  mutate(label = ifelse(n_trials > 75|deaths_per_100k > 50, T, F)) 
+
+cor(top_country$deaths_per_100k, top_country$n_trials, method = "spearman")
+res <- cor.test(top_country$deaths_per_100k, top_country$n_trials, method = "spearman")
+res
+
+top_cor3 <- top_country %>%
+  ggplot(aes(x = deaths_per_100k, y=n_trials, col = continent)) +
+  scale_color_viridis(end = 0.74, name = "Continent") +
+    geom_label_repel(data = filter(top_country, label), 
+                         aes(label = Country,
+                             x = deaths_per_100k, y=n_trials),
+                   # nudge_y = 1, 
+                   # nudge_x = -50,
+                   label.size = 0,
+                   show.legend = F,
+                   label.padding = 0.25) +
+  geom_point(alpha = 0.7, aes(size = n_patients/1e5)) +
+  xlab("Number of deaths per 100,000 residents") +
+  ylab("Number of drug trials") +
+  scale_size(name = "Number of patients in trials (in 100,000)") +
+  annotate(geom = "text", x=70, y=350, label=paste0("r = ", round(res$estimate, 2), "\np = ", signif(res$p.value, 3)), col = "black", hjust = 0)
+
+top_cor3
+
+# pdf("output/scatters_country3.pdf", width = 12, height = 4)
+# top_cor3
+# dev.off()
+```
+
+
+#resolve synonyms with KATdb
+
+```{r dup names jul 2020}
+# resolve duplicated names first!
+# unify to the most commonly used name
+# TO DO: there is a mistake in KATdb connecting lopinavir and lopinavir/ritonavir combination (kaletra)
+# TO DO: another KATdb problem -- favipiravir i think and an R drug are connected.
+
+# translated_drugs <- read.csv("../../KATdb_shiny/COVID_translated_drug_list_30072020.csv")
+translated_drugs <- read.csv("data/COVID_translated_drug_list_30072020.csv")
+
+#need to resolve duplicate KATids for   same input_name, get the freq and order by desc(Freq), then distinct kat_id?
+comp_drugs <- translated_drugs %>% 
+  dplyr::select(kat_id, input_name) %>%  
+  mutate(input_name = tolower(input_name)) %>% 
+  group_by(kat_id, input_name) %>%
+  mutate(Freq = n()) %>%
+  distinct(.keep_all = T) %>% 
+  arrange(desc(Freq)) %>%
+  # distinct(kat_id, ) %>% #wont work because you lose all the different names
+  ungroup() %>%
+  group_by(input_name) %>%
+  mutate(
+    # kat_id = ifelse(is.na(kat_id), input_name, kat_id), 
+         main_kat_id = kat_id[1]) %>%
+  rename("Drug" = "input_name", 
+         "old_kat_id" = kat_id,
+         "kat_id" = main_kat_id) %>%
+  select(-Freq, -old_kat_id) %>%
+  distinct()
+comp_drugs %>% nrow()
+
+comp_drugs[duplicated(comp_drugs$kat_id),]
+
+# TO DO drugs_data should be in really good shape
+comp_drugs <- left_join(drugs_date, comp_drugs)
+comp_drugs <- comp_drugs %>%
+    mutate(kat_id = ifelse(is.na(kat_id), as.character(Drug), as.character(kat_id)))#### moved this up
+    
+
+# split kaletra into lopinavir and ritonavir
+lop_trials <- comp_drugs %>% 
+  filter(Drug %in% c("lopinavir", "kaletra", "lopinavirritonavir")) %>% 
+    mutate(Drug = "lopinavir")
+kat_lop_trials <- comp_drugs[comp_drugs$kat_id %in% lop_trials$kat_id,]
+lop_trials <- rbind(lop_trials, kat_lop_trials) %>% mutate(kat_id = "lopinavir") %>% as.data.frame() %>% distinct()
+
+rit_trials <- comp_drugs %>% 
+  filter(Drug %in% c("ritonavir", "kaletra", "lopinavirritonavir", "ritanavir", "ritonavirfour")) %>%
+    mutate(Drug = "ritonavir")
+kat_rit_trials <- comp_drugs[comp_drugs$kat_id %in% rit_trials$kat_id,] %>% filter(Drug != "lopinavir")
+rit_trials <- rbind(rit_trials, kat_rit_trials) %>% mutate(kat_id = "ritonavir") %>% as.data.frame() %>% distinct()
+
+comp_drugs <- comp_drugs %>% filter(!Drug %in% c("lopinavir", "kaletra", "lopinavirritonavir", "ritonavir", "ritanavir", "ritonavirfour"))
+comp_drugs <- rbind(comp_drugs, 
+                    # loprit_trials, 
+                    lop_trials, rit_trials)
+
+# atazanavirritonavir
+
+
+# adding manual curation 
+comp_drugs$kat_id[grepl("13 cis retinoic acid", comp_drugs$Drug)]  <- "KAT_C005198" #retinoic matches other stuff
+comp_drugs$kat_id[grepl("all[ -]trans retinoic", comp_drugs$Drug)]  <- "KAT_C004575"
+comp_drugs$kat_id[grepl("acetylsalicylic", comp_drugs$Drug)]  <- "KAT_C004648"
+# comp_drugs$kat_id[grepl("amino acid", comp_drugs$Drug)]  <- "KAT_C020144"
+comp_drugs$kat_id[grepl("arsenicum", comp_drugs$Drug)]  <- "KAT_C859832"
+comp_drugs$kat_id[grepl("brazilian green propolis", comp_drugs$Drug)]  <- "KAT_C887419"
+comp_drugs$kat_id[grepl("bolus vitamin d3|vit d3|vit d", comp_drugs$Drug)]  <- "KAT_C004891"
+comp_drugs$kat_id[grepl("camostate", comp_drugs$Drug)]  <- "KAT_C008329"
+comp_drugs$kat_id[grepl("chloridei", comp_drugs$Drug)]  <- "KAT_C012523"
+comp_drugs$kat_id[grepl("crocetinate", comp_drugs$Drug)]  <- "KAT_C012897"
+comp_drugs$kat_id[grepl("colchicina|colchimax", comp_drugs$Drug)]  <- "KAT_C004433"
+comp_drugs$kat_id[grepl("ganovo", comp_drugs$Drug)]  <- "KAT_C025413"
+comp_drugs$kat_id[grepl("glycyrrhizinate", comp_drugs$Drug)]  <- "KAT_C006057"
+comp_drugs$kat_id[grepl("hyperbaric oxygen", comp_drugs$Drug)]  <- "KAT_C008024"
+comp_drugs$kat_id[grepl("oxygenation", comp_drugs$Drug)]  <- "KAT_C008024"
+comp_drugs$kat_id[grepl("interleukin", comp_drugs$Drug)]  <- "KAT_C822400"
+comp_drugs$kat_id[grepl("melatonina", comp_drugs$Drug)]  <- "KAT_C005269"
+# comp_drugs$kat_id[grepl("menacwy|nimenrix", comp_drugs$Drug)]  <- "KAT_C009253"
+# comp_drugs$Drug[grepl("mesenchymal stem cell", comp_drugs$Drug)]  <- "mesenchymal stem cells"
+comp_drugs$kat_id[grepl("methylprednisolon|methylprednisolone100mg|metilprednisolona|metilprednisolone", comp_drugs$Drug)]  <- "KAT_C005304"
+comp_drugs$kat_id[grepl("^phosphat", comp_drugs$Drug)]  <- "KAT_C863342"
+comp_drugs$kat_id[grepl("prolastina", comp_drugs$Drug)]  <- "KAT_C850226"
+# comp_drugs$kat_id[grepl("ritonavirfour", comp_drugs$Drug)]  <- "KAT_C006790"
+comp_drugs$kat_id[grepl("sofusbuvir", comp_drugs$Drug)]  <- "KAT_C008378"
+comp_drugs$kat_id[grepl("zincum", comp_drugs$Drug)]  <- "KAT_C020803"
+comp_drugs$kat_id[grepl("cyclosporin|ciclosporin|sandimmun", comp_drugs$Drug)]  <- "KAT_C004435"
+comp_drugs$kat_id[grepl("hydroxychloroquin|hidroxicloroquine|hidroxicloroquine|hydroxychloroquin|hydroxychloroquine200mg|hydoxychloroquine|plaquenil|a hcq|hydroxychloroquie|hydroxyghloroquine|inhalable hydroxychloroquine|hcq|hydroxycloroquine|hydroxychlorquin|hydroxychlorochine|hydroxycholorquine", comp_drugs$Drug)]  <- "KAT_C006111"
+comp_drugs$kat_id[grepl("azitromycine|azithromycine|zithromax|azythromycin|azythromycine|azitromicina|azythromicin|azythromicine", comp_drugs$Drug)]  <- "KAT_C007052" #"KAT_C007052"
+comp_drugs$kat_id[grepl("linolenic acidit", comp_drugs$Drug)]  <- "KAT_C008252"
+comp_drugs$kat_id[grepl("fondapariniux", comp_drugs$Drug)]  <- "KAT_C005997"
+comp_drugs$kat_id[grepl("oseltamivirwith", comp_drugs$Drug)]  <- "KAT_C006509"
+comp_drugs$kat_id[grepl("tociliuzumab|actemra|tocilizumab", comp_drugs$Drug)]  <- "KAT_C009350" #KAT_C828501
+comp_drugs$kat_id[grepl("albumine", comp_drugs$Drug)]  <- "KAT_C020132"
+comp_drugs$kat_id[grepl("pulmozyme|dornase alfa", comp_drugs$Drug)]  <- "KAT_C009502"
+comp_drugs$kat_id[grepl("ivermectina", comp_drugs$Drug)]  <- "KAT_C005202"
+comp_drugs$kat_id[grepl("enoxaparina|lovenox|enoxaparine|lmwh", comp_drugs$Drug)]  <- "KAT_C004473"
+comp_drugs$kat_id[grepl("heparin iv|heparinate|heparins|heparinization|heparinized|unfractionated heparin|heparin", comp_drugs$Drug)]  <- "KAT_C020096"
+# comp_drugs$kat_id[grepl("corticosteroids", comp_drugs$Drug)]  <- "KAT_C830005"
+comp_drugs$kat_id[grepl("licorice", comp_drugs$Drug)]  <- "KAT_C822600"
+# comp_drugs$Drug[grepl("kevzara", comp_drugs$Drug)]  <- "sarilumab"
+
+comp_drugs$kat_id[grepl("avigan", comp_drugs$Drug)]  <- "KAT_C008434"
+	comp_drugs$kat_id[grepl("acalabrutininb", comp_drugs$Drug)]  <- "KAT_C008604"
+comp_drugs$kat_id[grepl("adamumab", comp_drugs$Drug)]  <- "KAT_C004374"
+comp_drugs$kat_id[grepl("azivudine", comp_drugs$Drug)]  <- "azvudine"
+comp_drugs$kat_id[grepl("anu tail", comp_drugs$Drug)]  <- "anu taila"
+comp_drugs$kat_id[grepl("biomodulina t", comp_drugs$Drug)]  <- "biomodulin t"
+comp_drugs$kat_id[grepl("ba-bao-dan", comp_drugs$Drug)]  <- "babaodan"
+comp_drugs$kat_id[grepl("brammanandha bairavam", comp_drugs$Drug)]  <- "bramanandha bairavam"
+comp_drugs$kat_id[grepl("chloroquineommon", comp_drugs$Drug)]  <- "KAT_C004847"
+	comp_drugs$kat_id[grepl("kabasurakudineer", comp_drugs$Drug)]  <- "kabasura kudineer"
+comp_drugs$kat_id[grepl("dexamethazone", comp_drugs$Drug)]  <- "KAT_C008896"
+	comp_drugs$kat_id[grepl("eculizumabe", comp_drugs$Drug)]  <- "KAT_C004450"
+comp_drugs$kat_id[grepl("chyawanprash", comp_drugs$Drug)]  <- "chyavanprash"
+comp_drugs$kat_id[grepl("khameera marwareed", comp_drugs$Drug)]  <- "khameera marvareed"
+	comp_drugs$kat_id[grepl("mahasudarshan ghana", comp_drugs$Drug)]  <- "maha-sudarshana ghan"
+comp_drugs$kat_id[grepl("lupinavir", comp_drugs$Drug)]  <- "KAT_C006240"
+comp_drugs$kat_id[grepl("ruconest", comp_drugs$Drug)]  <- "KAT_C009355"
+comp_drugs$kat_id[grepl("vitamin d|vitamin-d|vitamine d", comp_drugs$Drug)] <- "KAT_C004891"
+comp_drugs$kat_id[grepl("vitamin c", comp_drugs$Drug)] <- "KAT_C004398"
+# keep convalescent plasma
+comp_drugs$kat_id[grepl("convalescent|convalescence", comp_drugs$Drug)]  <- "KAT_C1"
+comp_drugs$kat_id[grepl("plasma", comp_drugs$Drug)]  <- "KAT_C1"
+# keep chinese
+comp_drugs$kat_id[grepl("chinese|tcm", comp_drugs$Drug)]  <- "KAT_C2"
+comp_drugs$kat_id[grepl("stem cell|mesenchymal|msc", comp_drugs$Drug)]  <- "KAT_C3"
+comp_drugs$kat_id[grepl("ayurved", comp_drugs$Drug)]  <- "KAT_C4"
+comp_drugs$kat_id[grepl("ayush", comp_drugs$Drug)]  <- "KAT_C5"	
+comp_drugs$kat_id[grepl("dihydroartemisinine", comp_drugs$Drug)]  <-  "KAT_C009144"
+comp_drugs$kat_id[grepl("adathodai manappagu|aadathodai manapagu|adathodai manapagu", comp_drugs$Drug)] <- "adathodai manapagu"
+comp_drugs$kat_id[grepl("gelatine", comp_drugs$Drug)]  <-  "gelatin"
+
+comp_drugs$kat_id[grepl("immunoglobulins|immunoglobulin|human immunoglobulins|human immunoglobulin|immune globulin", comp_drugs$Drug)]  <- "immunoglobulin"
+comp_drugs$kat_id[grepl("interferonum|interferone", comp_drugs$Drug)]  <- "interferone"
+comp_drugs$kat_id[grepl("lactobaciltus", comp_drugs$Drug)]  <-  "lactobacillus"
+comp_drugs$kat_id[grepl("lianhuaqingwen", comp_drugs$Drug)]  <-  "lianhua qingwen"
+comp_drugs$kat_id[grepl("hydroxyvitamin", comp_drugs$Drug)]  <-  "25-hydroxyvitamin"
+comp_drugs$kat_id[grepl("aayudh d", comp_drugs$Drug)]  <-  "aayudh" 
+
+comp_drugs$kat_id[grepl("n-acetyl-cysteine|n acetylcysteine|n-acetyl cysteine|n-acetylcysteine", comp_drugs$Drug)] <- "KAT_C004518"
+
+# # TO DO: delete and check it's deleted	
+# ad5-ncov
+# ad26covs1
+# covalix vaccoil
+# ag0302-covid19
+# covid19 vaccine
+# covishield
+# cvncov
+# epivaccorona vaccine
+# 	genetically modified
+# ally
+# 	angiotensin-converting
+# anti-sars cov-2 t
+# s-vax loaded autologous
+# b
+#  e
+# bailing
+# 	cardioprotective agent
+# chemoprophylactic
+# 	cho cells
+# clear lung detoxification
+# damp
+# empathy
+# empatica
+# enteral nutrition
+# enteral nutritional
+# enzymes
+# epitope
+# excipient
+# ffp2
+# growth hormone
+# hopsital
+# menstrual blood
+# intravenous immune
+# intravenous anaesthesia
+# intravenous immunoglubolin
+# iodonated
+# measles mumps and
+# metastatic
+# methylation
+# nebulised recombinant
+# organicell flow
+# osteoporosis
+# ozonated
+# ozonized
+# personal protection
+# proton
+# raas inhibitor
+# ringer
+# sedative
+# surfactant
+# vitamina
+# vitamine
+
+# alertness 	
+# , a nitric drug
+# base provided|brands|brand|	
+# care protocol|cavity|	
+# co-interventions|coach|coaches|coaching|committee|commit|commitments|direction|dominant|dominated|elements|empathy|empatica|emulsions
+```
+
+
+```{r unify names}
+
+## TO DO sort out delete the incorrect one --- check if it runs
+# TO DO comment the %>% and check what it does
+
+
+# removes duplicated names if the same kat_id
+comp_drugs <- comp_drugs %>% 
+  arrange(TrialID, kat_id, Drug) %>% 
+  as.data.frame() %>% 
+    # group_by(Drug) %>% ######
+    # mutate(kat_id = ifelse(is.na(kat_id), as.character(Drug), as.character(kat_id))) %>% #### moved this up --- get rid of some unpopular drugs
+  distinct(TrialID, kat_id, .keep_all = T) %>% #this effects the "frequency" of most popular names
+  distinct(TrialID, Drug, .keep_all = T) 
+
+# keep NA freqs
+comp_drugs <- comp_drugs %>% #at this point it is still duplicated trials - non unified names
+    group_by(Drug) %>% 
+    mutate(kat_id = ifelse(is.na(kat_id), as.character(Drug), as.character(kat_id))) %>%
+    ungroup() %>%
+  distinct(Drug, Date, TrialID, .keep_all = T)
+
+# unify names #TO DO: check if this works
+comp_drugs_freq <- table(Drug = comp_drugs$Drug, kat_id = comp_drugs$kat_id) %>% 
+  as.data.frame() %>% 
+  filter(Freq != 0)  %>% 
+  # filter(kat_id %in% dup_drugs$kat_id) %>%
+  group_by(kat_id) %>% 
+  mutate(n_kat = n()) %>% 
+  arrange(Drug, desc(n_kat)) %>% 
+  as.data.frame() %>% 
+  distinct(Drug, .keep_all=T) %>% 
+  arrange(kat_id, desc(Freq)) %>% 
+  group_by(kat_id) %>% 
+  # mutate(total_n = sum(Freq), #total n needs to be updated after duplicates are removed
+   mutate(main_name = Drug[1]) %>%
+  distinct(Drug, .keep_all=T)
+comp_drugs_freq$n <- unlist(lapply(table(as.character(comp_drugs_freq$kat_id)), FUN = seq, from = 1))
+
+comp_drug_freq_all <- comp_drugs_freq #keep a copy with diverse names
+
+# update comp_drugs and recalc freqs to remove duplicates, keep the more popular name if duplicated
+comp_drugs <- comp_drugs %>% 
+  ungroup() %>% 
+  left_join(ungroup(comp_drugs_freq)) %>%
+      rename("old_name" = "Drug",
+        "Drug" = "main_name") %>%
+  arrange(desc(Freq)) %>%
+  distinct(TrialID, Drug, Date, .keep_all = T) #here
+
+comp_drugs_freq <- table(Drug = comp_drugs$Drug, kat_id = comp_drugs$kat_id) %>% 
+  as.data.frame() %>% 
+  filter(Freq != 0)  %>% 
+  arrange(kat_id, desc(Freq)) %>% 
+  group_by(kat_id) %>% 
+  mutate(total_n = sum(Freq)) %>%
+  distinct(Drug, .keep_all=T)
+comp_drugs_freq$n <- unlist(lapply(table(as.character(comp_drugs_freq$kat_id)), FUN = seq, from = 1))
+
+p_all_drug <- comp_drug_freq_all %>%
+  group_by(main_name) %>% 
+  mutate(total_n = sum(Freq)) %>%
+  filter(total_n >= 20) %>% 
+    # arrange(desc(n)) %>%
+  ggplot(aes(x=reorder(main_name, desc(total_n)), y= Freq, fill = n)) +
+  geom_bar(stat="identity") +
+  # theme(legend.position = "None") +
+  scale_fill_viridis(discrete = F, end = 0.40, name = "Number of synonyms", direction = 1)+
+  theme(axis.text.x = element_text(angle=90, hjust=1,vjust=0)) +
+  xlab("Drug name") +
+  ylab("Number of trials")
+
+
+p_all_drug
+
+```
+
+```{r pop drugs}
+# most popular drugs
+
+top_drugs <- comp_drugs_freq %>% 
+    arrange(desc(total_n)) %>% 
+    as.data.frame() %>%
+    distinct(Drug)  %>% 
+    head(8) %>% 
+    rbind(data.frame(Drug = c("remdesivir", "dexamethasone", "convalescent plasma"))) %>% 
+    distinct(Drug) 
+
+
+```
+
+
+```{r pop drugs by other stats (rand+comb)}
+
+# TO DO: why is comp_drug_freq_ex larger than comp_drug_freq
+# TO DO: -- could get rid of all the names, keep only the unified now
+
+comp_drugs_ex <- comp_drugs %>% 
+  ungroup() %>% 
+  arrange(desc(Freq))
+
+comp_drugs_freq_ex <- table(Drug = comp_drugs_ex$Drug, kat_id = comp_drugs_ex$kat_id, isRandomized = comp_drugs_ex$isRandomized) %>% 
+  as.data.frame() %>% 
+  filter(Freq != 0) %>% 
+  group_by(kat_id) %>%
+  mutate(total_n = sum(Freq))
+
+comp_drugs_freq_ex$n <- unlist(lapply(table(as.character(comp_drugs_freq_ex$kat_id)), FUN = seq, from = 1))
+
+# randomised trials for top drugs plot
+pdrug_random <- comp_drugs_freq_ex %>% 
+  filter(Drug %in% top_drugs$Drug) %>% 
+  ggplot(aes(x = reorder(Drug, total_n), y=Freq, fill = isRandomized)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  ylab("Number of trials") +
+  xlab("Drug name") +
+ theme(text = element_text(size=20)) +
+  scale_fill_viridis(discrete = T, end = 0.15)+
+    ggtitle("In a randomised trial")
+  
+pdrug_random
+
+pdrug_random_tbl <- comp_drugs_freq_ex %>% 
+  filter(Drug %in% top_drugs$Drug) %>% 
+      select(-n) %>% 
+    distinct()  %>%
+    group_by(kat_id, isRandomized) %>% 
+    mutate(Freq = sum(Freq)) %>%
+    distinct() %>% 
+    pivot_wider(names_from = isRandomized, values_from = Freq) %>% 
+    rename("isRandomized" = `TRUE`,
+           "isNotRandomized" = `FALSE`)
+
+# combination plot
+comp_drugs_ex <- comp_drugs_ex %>%
+  group_by(TrialID) %>%
+  mutate(n_drugs_in_trial = n(),
+         isCombination = n_drugs_in_trial > 1) 
+comp_drugs_freq_ex <- table(Drug = comp_drugs_ex$Drug, kat_id = comp_drugs_ex$kat_id, isCombination = comp_drugs_ex$isCombination) %>% 
+  as.data.frame() %>% 
+  filter(Freq != 0) %>% 
+  group_by(kat_id) %>% 
+  mutate(total_n = sum(Freq))
+
+
+comp_drugs_freq_ex$n <- unlist(lapply(table(as.character(comp_drugs_freq_ex$kat_id)), FUN = seq, from = 1))
+
+# combination plot, no labels
+pdrug_comb2 <- comp_drugs_freq_ex %>% 
+  filter(Drug %in% top_drugs$Drug) %>% 
+    mutate(isCombination = ifelse(as.character(isCombination), "yes", "no")) %>%
+  # arrange(desc(total_n)) %>%
+  # head(50) %>%
+  ggplot(aes(x = reorder(Drug, total_n), y=Freq, fill = isCombination)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  ylab("Number of trials") +
+  xlab("Drug name") +
+ theme(text = element_text(size=20),
+       axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank(),
+       legend.title = element_blank()) +
+  scale_fill_viridis(discrete = T, end = 0.15) +
+    ggtitle("Used in combination") 
+  
+pdrug_comb2
+
+pdrug_comb_tbl <- comp_drugs_freq_ex %>% 
+  filter(Drug %in% top_drugs$Drug) %>% 
+    select(-n) %>% 
+    distinct()  %>% 
+    group_by(kat_id, isCombination) %>% 
+    mutate(Freq = sum(Freq)) %>%
+    distinct() %>% 
+    pivot_wider(names_from = isCombination, values_from = Freq) %>% 
+    rename("isCombination" = `TRUE`,
+           "isNotCombination" = `FALSE`)
+
+pdrug_tbl <- full_join(pdrug_random_tbl, pdrug_comb_tbl)
+pdrug_tbl <- pdrug_tbl %>%
+    mutate(perc_comb = round(isCombination/total_n, digits = 3),
+           perc_random = round(isRandomized/total_n, digits = 3))
+
+pdrug_tbl %>% 
+  arrange(desc(total_n)) %>%
+    write.csv(file = "output/Fig_2AB_top_drugs_randomized_combination.csv", row.names = F)
+
+```
+
+
+
+```{r drug trials per date}
+
+tr_c_order <- comp_drugs_freq %>% arrange(desc(total_n)) %>% filter(Drug %in% top_drugs$Drug)
+
+
+# drug trials per date
+head(comp_drugs)
+
+
+drugs_date <- comp_drugs %>% 
+    arrange(desc(Freq)) %>%
+    distinct(TrialID, Drug, .keep_all = T) %>%
+    droplevels()
+drugs_per_date <- as.data.frame(table(Drug = drugs_date$Drug, Date = drugs_date$Date))
+drugs_per_date$Date <- as.Date(drugs_per_date$Date)
+
+write.csv(drugs_per_date, paste0("output/drugs_per_date", Sys.Date(), ".csv"), row.names = F)
+
+```
+
+# ATC annotation
+```{r ATC for covid drugs}
+# TO DO: clean this section
+
+ATC_clinical_drugs <- read.csv("../../KATdb_shiny/COVID_translated_drug_list_30072020.csv")
+ATC_clinical_drugs <- read.csv("data/COVID_translated_drug_list_30072020.csv")
+
+TP_list <- ATC_clinical_drugs %>% filter(target_type %in% c("ATC"))
+
+TP_ACT_lists <- c("ATC_clinical_drugs")
+for (i in TP_ACT_lists){
+TP_list <- get(i)
+TP_list$input_name_orig <- TP_list$input_name
+TP_list$input_name <- tolower(TP_list$input_name)
+# TP_list <- TP_list[grepl("^BRD", TP_list$input_name),]
+TP_list <- TP_list[TP_list$target_type == "ATC",]
+TP_list <- TP_list[grepl("^[A-Z][0-9]{2}[A-Z]{2}", TP_list$target_name) | is.na(TP_list$target_name),]
+TP_list$name <- sub(".*[(](.*)[)].*", "\\1", TP_list$target_name)
+TP_list$target_name <- sub("(.*)[(](.*)[)].*", "\\1", TP_list$target_name)
+TP_list$name[grepl("^[A-Z][0-9]{2}[A-Z]{2}", TP_list$name)] <- NA
+TP_list <- dplyr::distinct(TP_list, kat_id, input_name, target_name, name, .keep_all=T)
+
+# try increase mapping
+TP_list_na <- TP_list[is.na(TP_list$name),]
+TP_list <- TP_list[!is.na(TP_list$name),]
+TP_list_na <- TP_list_na[!(TP_list_na$input_name %in% TP_list$input_name & TP_list_na$target_name %in% TP_list$target_name),]
+TP_list_na$name <- NULL
+
+translated_WHO <- TP_list_na[TP_list_na$input_type == "WHO Name",]
+translated_WHO <- dplyr::distinct(translated_WHO, kat_id, input_name, target_name)
+colnames(translated_WHO)[2] <- "name"
+
+TP_list_na <- dplyr::left_join(TP_list_na, translated_WHO[,2:3])
+TP_list_na <- dplyr::distinct(TP_list_na, kat_id, input_name, target_name, .keep_all=T)
+
+TP_list <- rbind(TP_list, TP_list_na)
+TP_list <- dplyr::distinct(TP_list, input_name, target_name, .keep_all=T)
+
+# add names to all blank atc codes that already have a name paired with another BRD id. all the atc codes with a name should match. 
+write.csv(TP_list, file = paste0("output/", i, "_ATC", Sys.Date(), ".csv"), row.names = F)
+}
+
+TP_list$L1 <- substr(TP_list$target_name, 1, 1) 
+TP_list$L2 <- substr(TP_list$target_name, 1, 3) 
+TP_list$L3 <- substr(TP_list$target_name, 1, 4) 
+TP_list$L4 <- substr(TP_list$target_name, 1, 5)
+TP_list <- TP_list[!is.na(TP_list$target_name),]
+# ggplot(TP_list, aes(x=L1, fill=L1)) + geom_histogram(stat= "count") + scale_fill_viridis(discrete = T)
+# ggplot(TP_list, aes(x=L2, fill=L1)) + geom_histogram(stat= "count") + scale_fill_viridis(discrete = T)
+
+```
+
+```{r ATC annotations}
+ATC_data <- read.csv("/Users/kkoler/Google Drive/Documents/Databases/ATC/2019AB/ATC.csv")
+ATC_data <- read.csv("data/ATC/2019AB/ATC.csv")
+
+ATC_data <- ATC_data[grepl("http://purl.bioontology\\.org/ontology/UATC/", ATC_data$Class.ID),]
+ATC_data$Class.ID <- sub("http.*/", "", ATC_data$Class.ID )
+
+ATC_1 <- ATC_data[grep("^[A-Z]$", ATC_data$Class.ID),]
+ATC_1$Preferred.Label <- tolower(ATC_1$Preferred.Label)
+ATC_1$Preferred.Label <- gsub(" in atc$", "", ATC_1$Preferred.Label)
+# ATC_1$Preferred.Label[nchar(ATC_1$Preferred.Label) > 57] <- paste0(substr(ATC_1$Preferred.Label[nchar(ATC_1$Preferred.Label) > 57], 1, 57), "*")
+
+ATC_3 <- ATC_data[grep("^[A-Z][0-9][0-9]$", ATC_data$Class.ID),]
+ATC_3$Preferred.Label <- tolower(ATC_3$Preferred.Label)
+ATC_3$Preferred.Label <- gsub(" in atc$", "", ATC_3$Preferred.Label)
+ATC_3_full <- ATC_3
+
+ATC_level <- 1
+#just in case the whole thing is run and ATC_level = 1
+if (ATC_level == 1){
+  ATC_3 <- ATC_data[grep("^[A-Z]$", ATC_data$Class.ID),]
+}
+ATC_3$Preferred.Label <- tolower(ATC_3$Preferred.Label)
+ATC_3$Preferred.Label <- gsub(" in atc$", "", ATC_3$Preferred.Label)
+ATC_3$Preferred.Label[nchar(ATC_3$Preferred.Label) > 57] <- paste0(substr(ATC_3$Preferred.Label[nchar(ATC_3$Preferred.Label) > 57], 1, 57), "*")
+
+ATC_3_full$ATC.LEVEL1 <- sub("(^.)..", "\\1", ATC_3_full$Class.ID)
+colnames(ATC_3_full)[1:2] <- c("ATC.LEVEL2", "Preferred.label.ATC.LEVEL2")
+colnames(ATC_1)[1:2] <- c("ATC.LEVEL1", "Preferred.label.ATC.LEVEL1")
+
+ATC_join <- dplyr::left_join(ATC_1[,1:2], ATC_3_full[,c(1:2,12)], by="ATC.LEVEL1")
+ATC_join <- ATC_join[order(ATC_join$ATC.LEVEL2),]
+
+ATC_join$Preferred.label.ATC.LEVEL2 <- paste0(toupper(substr(ATC_join$Preferred.label.ATC.LEVEL2, 1,1)), substr(ATC_join$Preferred.label.ATC.LEVEL2, 2, nchar(ATC_join$Preferred.label.ATC.LEVEL2)))
+ATC_join$Preferred.label.ATC.LEVEL1 <- paste0(toupper(substr(ATC_join$Preferred.label.ATC.LEVEL1, 1,1)), substr(ATC_join$Preferred.label.ATC.LEVEL1, 2, nchar(ATC_join$Preferred.label.ATC.LEVEL1)))
+
+
+# write.csv(ATC_join, paste0("ATC_level1_level2_labels_all", Sys.Date(), ".csv"), row.names = F)
+
+
+ATC_all <-ATC_data %>% filter(ATC.LEVEL == 5)
+ATC_all$L1 <- substr(ATC_all$Class.ID, 1, 1) 
+ATC_all$L2 <- substr(ATC_all$Class.ID, 1, 3) 
+
+# ggplot(ATC_all, aes(x=L1, fill=L1)) + geom_histogram(stat= "count") + scale_fill_viridis(discrete = T)
+# ggplot(ATC_all, aes(x=L2, fill=L1)) + geom_histogram(stat= "count") + scale_fill_viridis(discrete = T)
+
+
+```
+
+```{r map covid drugs to ATC}
+# TO DO: annotate code
+TP_listt <- TP_list %>% 
+  arrange(kat_id, target_name, input_name) %>% 
+  distinct(kat_id, target_name, .keep_all = T) %>% 
+  # right_join(comp_drugs, by = c("kat_id" = "kat_id")) %>% 
+  right_join(select(comp_drugs, Drug, TrialID), by = c("input_name" = "Drug"))%>% 
+  filter(!is.na(target_name))%>%
+  select(-c(1:2,4), -input_name_orig, -name) %>% 
+    rename("Drug" = "input_name") %>%
+  distinct()
+
+TP_listt_2 <- TP_list %>% 
+    arrange(kat_id, target_name, input_name) %>% 
+  # filter(kat_id %in% TP_listt_2$kat_id) %>%
+  distinct(kat_id, target_name, .keep_all = T) %>% 
+  # right_join(comp_drugs, by = c("kat_id" = "kat_id")) %>% 
+  right_join(select(comp_drugs, kat_id, Drug, TrialID), by = c("kat_id" = "kat_id")) %>% 
+  filter(!is.na(target_name)) %>%
+  select(-(1:4), -input_name_orig, -name) %>% 
+  distinct() %>% 
+  rbind(TP_listt) %>% 
+  distinct()
+
+TP_listt <- TP_listt_2 %>% 
+  right_join(comp_drugs)
+
+L22 <- TP_listt %>% 
+  arrange(TrialID, Drug, L2 ) %>% 
+  distinct(Drug, L2, TrialID, .keep_all= T)
+
+L2 <- L22 %>%
+  filter(!is.na(L2)) %>%
+  group_by(L2) %>% 
+  mutate(total_L2 = n()) %>% 
+  left_join(select(ATC_3_full, 1:2), by = c("L2" = "ATC.LEVEL2"))
+
+top_L2_t <- L2 %>% distinct(L2, total_L2, Preferred.label.ATC.LEVEL2) %>% 
+  arrange(desc(total_L2))
+
+
+L2 <- L22 %>%
+  distinct(L2, Drug, .keep_all = F) %>%
+  filter(!is.na(L2)) %>%
+  group_by(L2) %>%
+  mutate(total_L2 = n()) %>%
+  left_join(select(ATC_3_full, 1:2), by = c("L2" = "ATC.LEVEL2"))
+top_L2_d <- L2 %>% distinct(L2, total_L2, Preferred.label.ATC.LEVEL2) %>%
+  arrange(desc(total_L2))
+
+L2p <- L22 %>%
+  # left_join(select(trials, TrialID, size), by = c("TrialID" = "TrialID")) %>%
+  as.data.frame() %>%
+  distinct(L2, Drug, size, .keep_all = F) %>%
+  filter(!is.na(L2)) %>%
+  group_by(L2) %>%
+  summarise(total_L2 = sum(as.numeric(size), na.rm = T)) %>%
+  left_join(select(ATC_3_full, 1:2), by = c("L2" = "ATC.LEVEL2"))
+top_L2_p <- L2p %>% distinct(L2, total_L2, Preferred.label.ATC.LEVEL2) %>%
+  arrange(desc(total_L2))
+
+```
+
+```{r joined ATC plot (trials+drugs)}
+
+
+top_L2_d <- rename(top_L2_d, Drugs = total_L2)
+top_L2_t <- rename(top_L2_t, Trials = total_L2)
+top_L2_p <- rename(top_L2_p, Patients = total_L2)
+
+```
+
+```{r joined ATC plot (trials+drugs) patients per trial all}
+
+#
+dframe <- full_join(top_L2_d, top_L2_t)
+dframe <- full_join(dframe, top_L2_p)
+dframe$PatientsPerTrial <- round(dframe$Patients/dframe$Trials, digits = 4)
+dframe$diff <- rank(-dframe$Drugs) + rank(-dframe$Trials) + rank(-dframe$PatientsPerTrial)
+set.seed(1)
+
+dframe <- dframe %>% 
+  arrange(diff) %>% 
+    filter(Preferred.label.ATC.LEVEL2 != "all other therapeutic products" ) %>%
+  # head(10) %>%
+  mutate(id = as.factor(Preferred.label.ATC.LEVEL2),
+                 id = fct_reorder(id, diff)) 
+
+dframe_p <- dframe %>%
+ gather(result_name, value, Drugs, Trials, PatientsPerTrial)
+
+dframe_p$result_name <- factor(dframe_p $result_name, levels = c("Drugs", "Trials", "PatientsPerTrial"))
+
+dframe_p  %>% 
+    pivot_wider(names_from = result_name, values_from = value) %>%
+    select(-diff, -id) %>%
+    distinct() %>% 
+    write.csv("output/Fig_2C_therapeutic_class_all.csv", row.names = F)
+```
+
+```{r joined ATC plot (trials+drugs) patients per trial}
+
+dframe_p <- dframe %>% 
+    head(10) %>%  
+    gather(result_name, value, Drugs, Trials, PatientsPerTrial)
+dframe_p$result_name  <- factor(dframe_p$result_name, levels = c("Drugs", "Trials", "PatientsPerTrial"))
+
+bbbb <- dframe_p  %>%
+ggplot( aes(x = reorder(id, desc(diff)), y = value, fill = result_name)) +
+  geom_col() +
+  coord_flip() +
+  facet_grid(~ result_name, scales = "free_x") +
+  theme(
+        text = element_text(size = 20),
+        axis.text.x = element_text(vjust = 0, margin = margin(t = -2)), 
+        legend.position = "None") +
+  scale_fill_viridis(end = 0.3) +
+  xlab("Therapeutic class") +
+  ylab("Total number") 
+  # scale_y_continuous(labels = scientific_10)
+
+bbbb
+
+dframe_p  %>% 
+    pivot_wider(names_from = result_name, values_from = value) %>%
+    select(-diff, -id) %>%
+    distinct() %>% 
+    write.csv("output/Fig_2C_therapeutic_class.csv", row.names = F)
+```
+
+#Twitter plots
+
+```{r load twitter info}
+# load(paste0("COVID_SARS_coronavirus_nCov_tweets", "2020-09-10", ".RData"))
+load(paste0("../COVID_SARS_coronavirus_nCov_tweets", "2020-11-04", ".RData"))
+```
+
+```{r}
+# TO DO: clean this up
+colnames(tw_df)
+
+tw_df <- tw_df %>%
+    mutate(Drug = ifelse(grepl("hydoxychloroquine|hydroxychloroquine|hydroxychloroquin|hidroxicloroquina|hcq|hydoxychloroquin|hydroxychlorquin|hydroxychlorochine", drug_name), "hydroxychloroquine", drug_name), 
+           Drug = ifelse(grepl("azithromycin|azithromycine|azitromycine|azythromycin|azythromycine", Drug), "azithromycin", Drug),
+           Drug = ifelse(grepl("TCM|chinese medicine|traditional chinese medicine", Drug), "chinese medicine", Drug),
+           Drug = ifelse(grepl("stem cells|mesenchymal stem cells", Drug), "mesenchymal stem cells", Drug))
+
+tw_df <- tw_df %>% 
+    distinct(Drug, id, .keep_all = T)
+
+tw_sum <- tw_df %>% 
+    mutate(Date = as.Date(date)) %>% 
+    group_by(Drug, Date) %>% 
+    summarise(Freq = n()) %>%
+  filter(Drug != "drug_name")
+
+tw_df_drugs <- tw_sum %>% distinct(Drug, .keep_all = F)
+tw_df_dates <- seq(min(as.Date(tw_sum$Date)),max(as.Date(tw_sum$Date)), by = "day")
+
+all_drug_dates <- data.frame(Drug = rep(tw_df_drugs$Drug, each = length(tw_df_dates)), Date = rep(tw_df_dates, times = length(tw_df_drugs$Drug)))
+
+tw_sum <- full_join(tw_sum, all_drug_dates)
+tw_sum[is.na(tw_sum)] <- 0
+
+tw_sum <- tw_sum %>%
+  arrange(Drug, Date) %>% 
+  group_by(Drug) %>%
+    mutate(total_mentions = sum(Freq)) 
+
+tw_drug_sum <- tw_sum %>% 
+    distinct(Drug, total_mentions)
+
+
+tw_summ <- tw_sum
+
+tw_summ_sq <- pivot_wider(tw_summ, names_from = Date, values_from = Freq)
+write.csv(tw_summ_sq, file = paste0("output/kat_tweets_per_day_COVID_SARS_coronavirus_nCov_noretweets_noreplies", Sys.Date(), ".csv"))
+```
+
+
+```{r filter twitter and trial data}
+# TO DO: add 1/1/2020 to the trials plot
+# TO DO: reduce same lines
+
+tr_c_df <- drugs_per_date %>% 
+    full_join(all_drug_dates) %>% 
+    mutate(Freq = ifelse(is.na(Freq), 0, Freq)) %>% 
+    mutate(y = Freq) %>%
+    filter(Date >= as.Date("2020-01-01") &
+        Date <= as.Date("2020-09-04")) %>%
+    group_by(Drug) %>% 
+    arrange(Date) %>% 
+    mutate(CumSum = cumsum(Freq)) %>% 
+    mutate(total_trials = sum(Freq)) %>% 
+    arrange(desc(Date), desc(total_trials))
+
+tr_c_df %>%
+    write.csv("output/drug_trials_over_time_until_2020_09_04.csv", row.names = F)
+
+tr_c_order <- tr_c_df %>% filter(Drug %in% top_drugs$Drug) %>% distinct(Drug)
+
+
+tw_cc_df <- tw_summ  %>% 
+        filter(Date >= as.Date("2020-01-01") &
+               Date <= as.Date("2020-09-04")) %>%
+  group_by(Drug) %>% 
+    arrange(Date) %>% 
+  mutate(CumSum = cumsum(Freq)) %>% 
+    mutate(total_mentions = sum(Freq)) %>% 
+    arrange(desc(Date), desc(total_mentions))
+
+tw_cc_df %>%
+    write.csv("output/drug_tweets_over_time_until_2020_09_04.csv", row.names = F)
+
+tw_cc_order <- tw_cc_df %>%
+    filter(Drug %in% top_drugs$Drug) %>% 
+    distinct(Drug)
+
+
+tr_c_df %>%
+    filter(Drug %in% top_drugs$Drug) %>%
+    arrange(desc(Date), desc(total_trials)) %>%
+    write.csv("output/top_drug_trials_over_time_until_2020_09_04.csv", row.names = F)
+
+tw_cc_df %>% 
+    filter(Drug %in% top_drugs$Drug) %>% 
+    arrange(desc(Date), desc(total_mentions)) %>%
+    write.csv("output/top_drug_tweets_over_time_until_2020_09_04.csv", row.names = F)
+
+# save the table of totals
+drug_freq_table <- tr_c_df %>%
+    filter(Drug %in% top_drugs$Drug) %>%
+    select(Drug, total_trials) %>% 
+    left_join(select(tw_cc_df, Drug, total_mentions)) %>% 
+    distinct()
+
+tr_c_df %>%
+    filter(Drug %in% top_drugs$Drug) %>%
+    rename(trials = Freq, trials_CumSum = CumSum) %>%
+    select(Drug, Date, total_trials, trials_CumSum, trials) %>% 
+    left_join(select(rename(tw_cc_df, tweets = Freq, tweets_CumSum = CumSum), Drug, Date, tweets, tweets_CumSum, total_mentions)) %>% write.csv("output/top_drug_trials_and_tweets_over_time.csv", row.names = F)
+
+# all
+drug_freq_table_all <- tr_c_df %>%
+    # filter(Drug %in% top_drugs$Drug) %>%
+    select(Drug, total_trials) %>% 
+    left_join(select(tw_cc_df, Drug, total_mentions)) %>% 
+    distinct()
+
+drug_freq_table_all$total_trials[1]/number_of_drug_trials
+drug_freq_table_all %>% write.csv("output/all_drug_trials_and_tweets_over_time.csv", row.names = F)
+```
+
+```{r add timeline events}
+# 2020-03-21 - trump tweet
+# 2020-06-16 - NHS approved Dexamethasone https://www.gov.uk/government/news/world-first-coronavirus-treatment-approved-for-nhs-use-by-government?
+# 2020-05-01 - FDA issues emergency use authorization (EUA) for remdesivir
+# 2020-10-22 - FDA approved remdesivir https://www.sciencemag.org/news/2020/10/very-very-bad-look-remdesivir-first-fda-approved-covid-19-drug
+# 2020-10-15 - WHO’s Solidarity trial showed that remdesivir does not reduce mortality or the time COVID-19 patients take to recover
+# 2020-08-23 - FDA issues emergency use authorization (EUA) for convalescent plasma https://www.fda.gov/news-events/press-announcements/fda-issues-emergency-use-authorization-convalescent-plasma-potential-promising-covid-19-treatment
+# 2020-06-17- WHO concludes HCQ does not provide benefit https://www.who.int/news-room/q-a-detail/coronavirus-disease-covid-19-hydroxychloroquine
+
+events <- data.frame(Date = as.Date(c("2020-03-21", "2020-06-16", "2020-05-01", "2020-10-22", "2020-10-15", "2020-08-23", "2020-06-17")), 
+                     Drug = c("hydroxychloroquine", "dexamethasone", "remdesivir", "remdesivir", "remdesivir", "convalescent plasma", "hydroxychloroquine"),
+                     event = c("Trump tweets about hydroxychloroquine", 
+                               "UK approves dexamethasone", 
+                               "FDA issues EUA for remdesivir", 
+                               "FDA approves remdesivir", 
+                               "WHO's Solidarity trial shows no benefit for remdesivir", 
+                               "FDA issues EUA for convalescent plasma", 
+                               "WHO's Solidarity trial shows no benefit for hydroxychloroquine"), 
+                     type = c("twitter", "trials", "trials", "trials", "trials", "trials", "trials"))
+
+tw_cc_df_events <- left_join(events, select(tw_cc_df, -Freq, -total_mentions)) %>%
+  filter(Date <= as.Date("2020-09-04"))
+
+```
+
+```{r plot trials and tweets}
+
+tr_c <- tr_c_df %>%
+    filter(Drug %in% top_drugs$Drug) %>%
+    mutate(Drug = factor(Drug, levels = tr_c_order$Drug)) %>%
+    ggplot(aes(x=Date, y = CumSum, group=Drug, color = Drug)) +
+geom_vline(data = tw_cc_df_events, aes(xintercept = Date), col = "grey85", lty = "dashed") +
+    geom_line(aes(col = Drug)) +
+    scale_color_viridis() +
+    scale_color_manual(breaks = tr_c_order$Drug,
+                     values=as.character(viridis(length(tr_c_order$Drug)))) +
+    # theme(legend.position = "None") + 
+    ggtitle("Total trials for a drug over time")  +
+    ylab("Total trials per drug") +
+    scale_x_date(date_breaks = "1 month", date_minor_breaks = "1 month", date_labels = "%B")
+
+tw_cc <- tw_cc_df %>%
+    filter(Drug %in% top_drugs$Drug) %>% 
+    mutate(Drug = factor(Drug, levels = tw_cc_order$Drug)) %>%
+    ggplot(aes(x=Date, y = CumSum/1e5, group=Drug)) +
+    geom_vline(data = tw_cc_df_events, aes(xintercept = Date), col = "grey85", lty = "dashed") +
+    geom_line(aes(col = Drug)) +
+    scale_color_viridis() +
+    scale_color_manual(breaks = tw_cc_order$Drug,
+             values=as.character(viridis(length(tw_cc_order$Drug))[match(tw_cc_order$Drug, tr_c_order$Drug)])) +
+    ggtitle("Total twitter mentions for a drug over time") +
+    ylab("Total mentions per drug (in 100,000)")+
+     # scale_y_continuous(labels = scientific_10)+
+    scale_x_date(date_breaks = "1 month", date_minor_breaks = "1 month", date_labels = "%B") +
+  scale_y_continuous(breaks = c(1:5))
+   
+
+cowplot::plot_grid(tr_c, tw_cc, nrow = 2)
+
+pdf(file = "output/Covid-tweets_vs_trials_dashed.pdf", width = 8)
+cowplot::plot_grid(tr_c, tw_cc, nrow = 2, labels = c("A", "B"), align = "vh")
+dev.off()
+```
+
+```{r drug metadata tbl}
+
+head(L22)
+head(drug_freq_table_all)
+
+drug_tbl <- left_join(L22, drug_freq_table_all) %>% select(target_name, Drug, old_name, total_trials, total_mentions) %>% distinct() %>% group_by(Drug, total_trials, total_mentions) %>% summarise(ATC_codes = list(unique(target_name)), synonyms = list(unique(old_name)))
+colnames(drug_tbl)
+
+trial_tbl <- L22 %>% select(TrialID, Drug, Date, Country, isRandomized, size, drugs) %>% distinct() %>% group_by(TrialID, Date, Country, isRandomized, size, drugs) %>% summarise(Drugs = paste(unique(as.character(Drug)), collapse = ", "))
+
+
+head(drug_trials)
+# write.csv(drug_trials, file = "CoVTRxdb/trial_info.csv")
+```
+
+
+##collect overall workflow numbers
+```{r top stats tbl}
+# top stats numbers
+top_stats <- data.frame( stat = c("Number of all trials", 
+                                  "Number of trials after Jan 1st",
+                                  "Number of drug trials",
+                                  "Number of drug trials with country", 
+                                  "Number of drugs", 
+                                  "Number of drugs in more than 10 trials", 
+                                  "% of drugs in more than 10 trials", 
+                                  "Number of patients"), 
+                         value = c(number_of_all_trials,
+                                   number_of_all_trials_after_jan,
+                                   number_of_drug_trials,
+                                   number_of_drug_trials_with_country,
+                                   length(unique(comp_drugs$Drug)),
+                                    sum(comp_drugs_freq$total_n > 10),
+                                   round(sum(comp_drugs_freq$total_n > 10)/length(unique(comp_drugs$Drug)), 4), 
+                                   sum(drug_trials$size, na.rm = T)) )
+top_stats %>% write.csv("output/workflow_summary_stats.csv", row.names = F)
+
+
+```
+
+```{r combined figure}
+
+pdf(paste0("output/Covid-clin-pharm-plot", version, ".pdf"), width = 12, height = 12)
+# cowplot::plot_grid(p1, p2, p3, nrow = 3)
+
+cowplot::plot_grid(
+        cowplot::plot_grid(
+                p1+ theme(text = element_text(size=16)),
+                top_cor3 + scale_size( name = "Number of patients")+ theme_classic(base_size = 16),
+                nrow = 1, labels = c("A", "B"), rel_widths = c(0.8, 1), label_size = 20),
+        cowplot::plot_grid(
+            pdrug_random+theme(legend.position = "None", aspect.ratio=1/1.2, text = element_text(size=16)),
+            pdrug_comb2+theme(legend.position = "None", aspect.ratio=1/1.2, text = element_text(size=16)), 
+            get_legend(pdrug_comb2), 
+            ncol = 3, rel_widths = c(1.5, 1, 0.2), labels = c("C", "D", ""), label_size = 20), 
+        cowplot::plot_grid(
+            bbbb + theme(text = element_text(size=16)), "",
+            rel_widths = c(1,0.1), nrow = 1), 
+        nrow = 3, labels = c("", "", "E"), label_size = 20, rel_heights = c(1, 0.8, 0.8))
+
+dev.off()
+```
+## Supplementary tables
+### Trials (a.k.a. Master table)
+- Original columns: Trial ID, Registration date, Scientific title, Intervention, Country, Randomized (Study design?), Target size
+- Curated/extracted columns: Drugs for sci title, Drugs for intervention, unified drug names, curated country, curated randomness, curated trial size, isCombination
+### Drugs over time
+- Columns: Drug, Date, Number of trials, Number of tweets
+### Drugs
+- Columns: Drug, All synonyms found in trials, ATC code, Total number of trials, Total number of tweets, Total number of patients
+### Country
+- Columns: Country, Number of trials, Number of patients, Population, Number of deaths, DeathsPer100kPop
+
+```{r}
+# L22
+
+colnames(trials)
+trials_s <- trials %>% select(TrialID, `Date registration`, `Scientific title`, Intervention, Countries, `Study design`, `Target size`, Date, size, isRandomized, Country, drugs) %>% full_join(trial_tbl)
+colnames(trials_s)[2:7] <- paste(colnames(trials_s)[2:7], "(Original)")
+colnames(trials_s)[8:12] <- paste(colnames(trials_s)[8:12], "(Curated/Extracted)")
+
+trials_s <- trials_s %>% mutate(`isCombination (Curated/Extracted)` = grepl("\\|", `drugs (Curated/Extracted)`) ) %>% select(-`drugs (Curated/Extracted)`) %>% 
+    rename(`Drugs (Curated/Extracted)` = Drugs,
+           `Size (Curated/Extracted)` = `size (Curated/Extracted)`) %>%
+    select(TrialID, `Date registration (Original)`, `Scientific title (Original)`, `Intervention (Original)`, `Countries (Original)`, `Study design (Original)`, `Target size (Original)`, `Date (Curated/Extracted)`, `Drugs (Curated/Extracted)`, `Country (Curated/Extracted)`, `Size (Curated/Extracted)`, `isRandomized (Curated/Extracted)`, `isCombination (Curated/Extracted)`) %>%
+    mutate(`Drugs (Curated/Extracted)` = ifelse(`Drugs (Curated/Extracted)` == "", NA, `Drugs (Curated/Extracted)`),
+           `isDrugTrial (Curated/Extracted)` = !is.na(`Drugs (Curated/Extracted)`))
+
+# missing
+# unified name -- check if the drugs are from clean names or dirty
+# is Combination 
+# delete tranditional chinese and other group terms?
+write.csv(trials_s, "master_COVID_trials_info.csv", row.names = F)
+
+tbl <- read.csv("master_COVID_trials_info.csv")
+colnames(tbl) <- gsub("  ", " ", trimws(gsub("\\.", " ", colnames(tbl))))
+colnames(tbl) <- trimws(gsub("Original|Curated Extracted", "", colnames(tbl)))
+tbl <- tbl %>% select(TrialID, Date, `Scientific title`, `Intervention`, `Country`, `Size`, `Drugs`, `isRandomized`, `isCombination`)
+
+tbl <- tbl %>% mutate(Drugs = ifelse(Drugs == "", NA, Drugs), isDrugTrial = !is.na(Drugs), 
+                      Size = as.integer(Size)) 
+
+write.csv(tbl, "CoVTRxdb/master_COVID_trials_info.csv", row.names = F)
+```
+
+

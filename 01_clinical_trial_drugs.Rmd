@@ -1,0 +1,427 @@
+---
+title: "Extract drug names from free text in COVID trials"
+output: html_notebook
+---
+
+#WHO trials
+WHO trials from: [https://www.who.int/ictrp/en/]
+Use WHO trials as they include trials from around the world
+```{r}
+library(ggplot2)
+library(dplyr)
+library(readr)
+library(tictoc)
+
+# source("~/Google Drive/Documents/Kat-colors/Kat-colors.R")
+
+# raw WHO data
+trials <- readr::read_csv("data/COVID19-web-2020-09-04.csv", 
+                          col_types = cols(`results date posted` = col_character(), 
+                                           `results url link` = col_character(),
+                                           `results yes no` = col_character())) #from 19/06/2020
+trials_problems <- problems(trials)
+
+version <- "v2020-09-04_cur"
+
+```
+
+```{r}
+sort(table(substr(trials$TrialID, 1, 3)))
+
+non_NCT_trials <- trials[!grepl("^NCT", trials$TrialID),]
+NCT_trials <- trials[grepl("^NCT", trials$TrialID),]
+```
+
+
+
+```{r WHO NCT trials(manual extraction), echo=FALSE}
+NCT_drug_trials <- NCT_trials[grepl("Drug", NCT_trials$Intervention),]
+
+drugs <- stringr::str_split_fixed(NCT_drug_trials$Intervention, "\\;", n=40)
+drugs <- drugs[, !colSums(drugs=="") == nrow(drugs)]
+table(sub(":.*", "", drugs))
+sort(drugs[!grepl("Drug:", drugs)], decreasing = T)[1:210]
+drugs <- gsub("Other:.*|Diagnostic Test:.*|Device:.*|Behavioral:.*|Radiation:.*|Procedure:.*|Gold Standard:", "", drugs) #there is one that is vitamin c
+drugs[grepl(".*[Pp]lacebo.*", drugs)]
+drugs <- gsub(".*[Pp]lacebo.*", "", drugs)
+
+pattern <- ".*[^+][sS]tandard [tT]reatment.*|[tT]reatment arm.*|[tT]reatment with|.*with the treatment.*|.*symptomatic treatment.*|.*usual treatment.*|.*[Ss]upport treatment|.*[Cc]onventional.*|.*basic.*|[sS]tandard-of-care.*|.*available treatment|[sS]tandard [tT]reatment.*|treatment$"
+drugs[grepl(pattern, drugs)]
+drugs <- gsub(pattern, "", drugs)
+
+pattern <- ".*drug.*"
+drugs[grepl(pattern, drugs)]
+drugs <- gsub(pattern, "", drugs)
+
+pattern <- ".*[Ss]tandard.*|arm|[Tt]ablet"
+pattern <- ".*[Ss]tandard [Cc]are.*|.*[^+].*[Ss]tandard [oO]f [Cc]are.*|.*[Cc]ontrol arm|arm will .*|[Oo]ral [Tt]ablet|[Oo]ral [Tt]ablets|[Tt]ablets|[Tt]ablet|.*\\+ [Ss]tandard [oO]f [Cc]are.*|.*Standard \\(spec.*|.*Standard Medi.*|.*[Ss]tandard [tT]herapy.*|.*[Ss]tandards [oO]f [Cc]are.*|Standar medical treatmen"
+sort(drugs[grepl(pattern, drugs)])
+drugs <- gsub(pattern, "", drugs)
+
+pattern <- ".*[pP]lasma.*"
+sort(drugs[grepl(pattern, drugs)])
+drugs <- gsub(pattern, "", drugs)
+
+pattern <- "plus|[Cc]ombined [Ww]ith| in combination of | in combination with|with"
+sort(drugs[grepl(pattern, drugs)])
+drugs <- gsub(pattern, "+", drugs)
+
+pattern <- ".*[Ss]aline.*|.*[wW]ater.*|solution.*"
+sort(drugs[grepl(pattern, drugs)])
+drugs <- gsub(pattern, "", drugs)
+
+pattern <- "[oO]ral|[iI]njection|[tT]herap|blood|transfer|[tT]reatm"
+pattern <- "Oral administration of |[^d][oO]ral.*[^0-9]|subcutaneous [iI]njection|for [iI]njection.*|[iI]njection.*|.*continuation.*|.*[Bb]ase [tT]herap.*|.*[Bb]ridge [tT]herap.*|.*chemo[tT]herap.*|combination therapy|[tT]herapy|.*blood.*|[Ii]njectable [sS]olution"
+sort(drugs[grepl(pattern, drugs)])
+drugs <- gsub(pattern, "", drugs)
+
+
+pattern <- "transfer|.*[tT]reatm.*|[oO]nly|[pP]roduct[^:]|[bB]est|[cC]are|[sS]uppor"
+pattern <- ".*[bB]est.*|.*[Ss]upportive [cC]are.*|[iI]njectable Product|[oO]nly.*|[Ii]nhalant [Pp]roduct|.* Cell Product.*|*.[Cc]are.*|Treatment group: will receive a combination of |Treatment.*| for a duration of seven days :"
+sort(drugs[grepl(pattern, drugs)])
+drugs <- gsub(pattern, "", drugs)
+
+
+pattern <- ".*[Cc]ontrol.*|.*[^d][Oo]ral.*"
+sort(drugs[grepl(pattern, drugs)])
+drugs <- gsub(pattern, "", drugs)
+
+pattern <- ".*[sS]upplement [Cc]onta.*|.*Lower-dose.*|Part [12] - | \\+ [Ss]unlight [Ee]xposure|.*Suspension.*"
+sort(drugs[grepl(pattern, drugs)])
+drugs <- gsub(pattern, "", drugs)
+
+pattern <- ".*Traditional.*|.*Allogeneic and expanded.*|2: |1: |\\(low dose.*|Low-dose|Mid dose|High dose| - high dose.*| - low dose.*| [sS]ubcutaneous [Ii]njection|Regular dose|Loading Dose| capsule.*| - Daily [dD]osing| - Weekly Dosing| 200 millig.*| administered for .*|Fixed-duration higher dose |200,.*|50,00.*|/ - |Single Dose of |Intravenous Solution |Intravenous |administration of |as a|\\($|Usual practice \\+ |acid gastro-resistant |Group|SOC \\+ "
+sort(drugs[grepl(pattern, drugs)])
+gsub(pattern, "", drugs[grepl(pattern, drugs)])
+drugs <- gsub(pattern, "", drugs)
+
+drugs <- drugs[, !colSums(drugs=="") == nrow(drugs)]
+
+
+# 0\\.[1-9].*[^%]|0\\.[1-9].*\\%|[1-9][0-9].*?[Mm][Gg].*[)+/]|2\\%
+pattern <- "capsules|continuous.*|followed by|when needed|.*sedation.*|^ | $| therapy|\\(low.*| inhaler|[cC]apsule"
+sort(drugs[grepl(pattern, drugs)])
+drugs <- gsub(pattern, "", drugs)
+            
+          
+
+# 0\\.[1-9].*[^%]|0\\.[1-9].*\\%|[1-9][0-9].*?[Mm][Gg].*[)+/]|2\\%
+pattern <- "[0-9]"
+# 80 mg|(200 billion)|20mg/d|0.12%|0.5%|100 mg/mL|200 mg|50 mg/mL|100mg|70mg|1 mg/kg|250MG|500 milligram (mg)|500Mg|4 MG|150 Mg|25 mg/kg 24 hours|100 Milligram(mg)|0.4Ml|(3200 mg + 1200 mg)
+# pattern <- "0\\.[1-9].*[^%]|0\\.[1-9].*\\%|[1-9][0-9].*?[Mm][Gg].*[)+/]|2\\%|2.0 mg"
+
+pattern <- "[0-9.].*?\\%|[0-9.]+[mM][LlgG]|[0-9.]+ [mM][LlgG]|/[Mm][Ll]|/d[^a]| /[Kk][Gg]|24 hours|[0-9].*? [Mm]illigram|\\(mg\\)| 3000 ppm|\\(200 billion\\)"
+
+sort(drugs[grepl(pattern, drugs)])
+gsub(pattern, "", drugs[grepl(pattern, drugs)])
+drugs <- gsub(pattern, "", drugs)
+
+# there is "Drug:3"
+
+# base|bridge| dry powder |Pill| boost|unfractionated|Aerosolized |(stages 2b/3)|(Advanced stage 3)|(overcome stage 3)|group|COVID-19$| OL$|Inj Syringe|twice a day|once a day|Aerosolized |Tab$|FT Reference|(stages 2b/3)|day|-Injectable Emulsion|MANAGEMENT OF COVID-19| blocking antibody+| Spray
+drugs <- drugs[, !colSums(drugs=="") == nrow(drugs)]
+
+pattern <- "\\(janus.*|[pP]ill|herbal.*|daily$|essential oils| dummy|non-ras blocking antihypertensives|.*agents.*|[gG]roup|inhalation.*| dry powder|base|bridge|boost|unfractionated|Aerosolized |\\(.*?stage.*?\\)|COVID-19$| OL$|Inj Syringe|twice a day|once a day|Aerosolized |Tab$|FT Reference|(stages 2b/3)|-Injectable Emulsion|MANAGEMENT OF COVID-19| blocking antibody\\+| Spray|Five-days |/day$|daily|Ten-days"
+sort(drugs[grepl(pattern, drugs)])
+gsub(pattern, "", drugs[grepl(pattern, drugs)])
+drugs <- gsub(pattern, "", drugs)
+
+drugs[grepl("\\(", drugs)]
+drugs[grepl("/", drugs)]
+drugs <- gsub(" / |/ ", "/", drugs)
+drugs <- trimws(drugs)
+
+
+pattern <- "[/]-|^ | $| Pill|\\(\\)|\\( \\+ \\)|\\(2 \\)|\\+$"
+sort(drugs[grepl(pattern, drugs)])
+gsub(pattern, "", drugs[grepl(pattern, drugs)])
+drugs <- gsub(pattern, "", drugs)
+# drugs <- gsub("[/]-|^ | $| Pill", "", drugs)
+# drugss <- strsplit(drugss, split = "+", fixed = T)
+# drugss <- unlist(drugss)
+
+pattern <- ".*: "
+drugs <- gsub(pattern, "", drugs)
+
+pattern <- " delivered via the INOpulse Delivery System|\\(2 doses\\)| \\[ACTEMRA\\]_#1|\\(Roche\\)|Statins \\(Cardiovascular Agents\\)"
+sort(drugs[grepl(pattern, drugs)])
+gsub(pattern, "", drugs[grepl(pattern, drugs)])
+drugs <- gsub(pattern, "", drugs)
+
+
+drugs[grepl("\\(|\\+|\\)|\\.|®", drugs)]
+drugs <- gsub("\\+$|\\.$|®", "", drugs)
+drugs <- tolower(drugs)
+drugs <- trimws(drugs)
+
+pattern <- "ace inhibitor.*|allogeneic and expanded.*| prefilled syringe| receptor blockers|angiotensin-converting enzyme.*|anti-covid-19.*|association of | vaccine|bovine lipid extract.*|nasal|calcium channel blockers|cerebrospinal fluid sampling.*|crest pro-health.*|dialyzable leukocyte|dose of|^drug |prophylactic dose| intermediate dose|patch|fixed-dose combination of |for subcutaneous administration \\(ph fdc sc\\)|fixed-duration|^hormones$|high-dose|.*mouthwash.*|immunoglobulin of cured patients|^immunoglobulin$|^immunoglubulins$|^immunosuppressive$|^inhaled|hypertonic| regimen| drug combination|low molecular weight |vaccine|mid-dose|gas for inhalation|gas$|no-immunosuppressive|extract|nasal and.*|reference drug|administration|shock-dependent |test drug| or thiazide-like diuretics|wharton's.*|unfractionated |corticosteroid|metered dose inhaler.*|combined art/|irrigation| \\+ standard preventive measures|as post exposure prophylaxis|pre-exposure prophylaxis|intermediate dose thromboprophylaxis|prophylactic/intermediate dose |granules| granula| decoction|/kg|inhalation aerosol|drug:3|essential oils|higher dose|non-ras blocking antihypertensives|drug:$|nebulization|infusion|granule|inhalation solution|nebulised "
+sort(drugs[grepl(pattern, drugs)])
+gsub(pattern, "", drugs[grepl(pattern, drugs)])
+drugs <- gsub(pattern, "", drugs)
+
+bad_names <- c("observational", "cancelled", "usual", "various", "gases", "biomarkers", "region", "regional", "vaccines")
+# df <- gsub(paste0(bad_names, collapse = "|"), "", df)
+
+pattern <- paste0(bad_names,  collapse = "|")
+sort(drugs[grepl(pattern, drugs, ignore.case = T)])
+gsub(pattern, "", drugs[grepl(pattern, drugs)])
+drugs <- gsub(pattern, "", drugs)
+
+drugs <- trimws(drugs)
+drugs <- gsub("  ", " ", drugs)
+drugs <- gsub(" and |and/or|&| \\+ ", "+", drugs)
+drugs <- gsub(" or ", "|", drugs)
+drugs <- gsub("  ", " ", drugs)
+drugs <- gsub("/$|-$", "", drugs)
+drugs <- gsub(" \\)", ")", drugs)
+
+
+
+drugs <- drugs[, !colSums(drugs=="") == nrow(drugs)]
+drugs <- apply(drugs, 1, paste0,  collapse = "|")
+drugs <- gsub("\\|{2,}", "\\|", drugs)
+# drugs <- gsub("\\|\\|", "\\|", drugs)
+# drugs <- gsub("\\|\\|", "\\|", drugs)
+drugs <- gsub("^\\|", "", drugs)
+drugs <- stringr::str_split_fixed(drugs, "\\|", n=25)
+drugs <- drugs[, !colSums(drugs=="") == nrow(drugs)]
+drugs <- trimws(drugs)
+
+drugs <- t(apply(drugs, 1, FUN= function(x){x <- c(unique(x), rep("", ncol(drugs)-length(unique(x))))}))
+drugs <- drugs[, !colSums(drugs=="") == nrow(drugs)]
+
+NCT_drug_trials$curated_or <- apply(drugs, 1, paste0,  collapse = "|")
+NCT_drug_trials$curated_or <- gsub("^\\|.*|\\|{2,}", "", NCT_drug_trials$curated_or)
+
+drugs <- drugs[, !colSums(drugs=="") == nrow(drugs)]
+drugs <- apply(drugs, 1, paste0,  collapse = "+")
+drugs <- gsub("\\+{2,}", "\\+", drugs)
+drugs <- gsub("^\\+", "", drugs)
+drugs <- stringr::str_split_fixed(drugs, "\\+", n=40)
+drugs <- drugs[, !colSums(drugs=="") == nrow(drugs)]
+drugs <- trimws(drugs)
+
+drugs <- t(apply(drugs, 1, FUN= function(x){x <- c(unique(x), rep("", ncol(drugs)-length(unique(x))))}))
+drugs <- drugs[, !colSums(drugs=="") == nrow(drugs)]
+
+NCT_drug_trials$curated_or_plus <- apply(drugs, 1, paste0,  collapse = "+")
+NCT_drug_trials$curated_or_plus <- gsub("^\\+.*|\\+{2,}", "", NCT_drug_trials$curated_or_plus)
+
+drugs <- drugs[, !colSums(drugs=="") == nrow(drugs)]
+drugs <- apply(drugs, 1, paste0,  collapse = "/")
+drugs <- gsub("/{2,}", "/", drugs)
+drugs <- gsub("^/", "", drugs)
+drugs <- stringr::str_split_fixed(drugs, "/", n=40)
+drugs <- drugs[, !colSums(drugs=="") == nrow(drugs)]
+drugs <- trimws(drugs)
+
+drugs <- t(apply(drugs, 1, FUN= function(x){x <- c(unique(x), rep("", ncol(drugs)-length(unique(x))))}))
+drugs <- drugs[, !colSums(drugs=="") == nrow(drugs)]
+
+NCT_drug_trials$curated_or_plus_slash <- apply(drugs, 1, paste0,  collapse = "/")
+NCT_drug_trials$curated_or_plus_slash <- gsub("^/.*|/{2,}", "", NCT_drug_trials$curated_or_plus_slash)
+
+
+drugss <- as.character(drugs)
+drugss <- drugss[drugss!=""]
+NCT_drugs <- as.data.frame(table(drugss))
+length(drugss)
+length(unique(drugss))
+drugss <- unique(drugss)
+cat(head(sort(drugss)), sep = "\n")
+
+
+```
+
+```{r}
+
+readr::write_csv(non_NCT_trials, paste0("non_NCT_trials", version, ".csv"))
+
+colnames(NCT_drugs) <- c("drug_names", "NCT_Freq")
+
+colnames(NCT_drug_trials)
+
+```
+
+
+```{r non-NCT drug trials test katdb vs manual}
+### KATdb drugs vs drugs from manual curation ####
+
+##### import KATdb drug names ####
+all_names <- read_tsv("~/Google Drive/Documents/KATdb_shiny/all_names_katdb_ATC_noSID08072020.tsv")
+
+all_names[grepl("remdesivir", all_names$lname),]
+all_names[grepl("kaletra", all_names$lname),]
+all_names[grepl("lopinavir", all_names$lname),]
+all_names[grepl("KAT_C006240", all_names$kat_id),]
+all_names[grepl("KAT_C002658", all_names$kat_id),]
+all_names[grepl("KAT_C841589", all_names$kat_id),]
+
+all_names$lname <- gsub('\\+|\\?|\\*|\\(|\\)|\\[|\\]|\\"|[".$\\{}]|\\|', "", tolower(all_names$name))
+all_names$lname <- gsub("^--|^-|^/--", "", all_names$lname)
+all_names <- all_names[nchar(all_names$lname) > 3,]
+
+pattern <- "Dietary Supplemen|Target|SPORT|Antigen|Heat|various|vaccines|^Rela$|^trim$|biomarkers|Antigens|Antibiotics|Acids|gastrointestinal|Date|Smoke|rheumatoid arthri|Smoking Cessation|Other respiratory|immunosuppressive|Magnetic Resonanc|Alcohol|Steroids|^Date$|corticosteroids|^Cere$|urine tests|ultrasound contra|$Trim$|reverse transcrip|retrovir|respiratory syste|Region|Radiotherapy|other vaccines|^rela$|vaccin|opioids|neuromuscular blo|nervous system|immunosuppressive|immunosuppressant|immunoglobulins|reverse transcrip|hormonal contrace|Heat|Coal|Circulat|blood transfusion|Apple|Antivirals|antiviral agents|antioxidants|Antipyretics|antihypertensive|Antigens|antidepressants|antibiotics|steroids|anti-inflammatory|antacids|angiotensin recep|anesthetics|Alzheimer's disea|Central Nervous S|Nervous System|Human immunodefic|Human|hormonal contrace|Washington Univer|Sultan|Stanford Universi|St Thomas' Hospit|Region|Philippin|Osaka University|Neon|^Lamb$|Austin|gastrointestinal|Oyster|Alimentary Tract|Ukrain|Turkey|Senega|Alba|Pala|Philippin|Saha|Senega|Turkey|Ukrain|Radish|University of Wis|BACILLUS CALMETTE|Thyme|Tempo|Sugar|sensory organs|Recombinant Human|Reduning|Raspberry|rabbit|Radiotherapy|proton pump inhib|Inhibitor|Protease Inhibito|Preempt|Nasal Sprays|Monoclonal Antibo|melatonin|Magnetic Resonanc|inflammation and|IMMUNOGLOBULINS|herbal preparatio|Gum Arabic|GLUCOCORTICOIDS|Glucose|gastrointestinal|Enzyme Inhibitors|Chinese herbal me|Agents for Treatm|ACE Inhibitors an|Volatile Organic|Vasoactive Intest|Specific ImmunoGL|Oils|royal jelly|World Health Orga|disease|^other|dietary supplem|[Oo]bservational|chemotherapy|gastrointestinal|ace inhibitors and|anti-inflammatory|anticoagulants|anticoagulants for|antihypertensive agents|antihypertensives|antimalarials|antiviral agents|antivirals|[Aa]ustin|bacterial and viral|bioimpedence|bioinformatics|biomarker|biological factors|blood coagulation|blood transfusion|butterfly|cancelled|cardiovascular agents|cardiovascular system|cerebral|cerebrovascular|cerebrospinal|chemokines|chemoprophylaxis|chemoprophylaxistrial|chemotherapy|chemorophylaxis|colony-stimulating|coloring agents|combinations of blockade|	complement inactivator|compound will|connective tissue|constellation|contrast media|cornwall|diuretics|drugs for treatment|endocrine therapy|enzyme inhibitors|epigenetic|epigenomics|epitopes|factor and|glucocorticoids|hematopoietic stem|	hopsital|hormones|immunosuppressive|immunoregulatory|immunoreaction|immunoncovid|inflammation and|leading|limesurvey|therapy|low molecular weight|macrophage colony|magnetic resonance|neurodegeneration|neuromuscular blockade|neuromuscular blocking|neuropsychiatric symptoms|observational|other respiratory|pancreatic cancer|parenteral nutrition|pearson|peptides|prefilled|protease inhibitor|protein subunit|proteinase inhibitor|proton pump inhibitor|radiotherapy|rabbit|regimen based|region|regional|recombinant tissue|respiratory system|control|senegal|sensory organs|stimulant|therapeutic anticoagulation|	tissue plasminogen|toning|trimester|tristate|utensils|vaccines|various|vitamin combining|base provided|brands|brand|care protocol|cavity|co-interventions|coaches|coaching|committee|commitments|commit|coach|direction|dominant|dominated|elements|empathy|empatica|emulsions|coronavirus|name|electronic|solution|glasses|glass|brand|favourable outcome"
+all_namess <- all_names[grepl(pattern, all_names$name, ignore.case = T),]
+all_names <- all_names[!grepl(pattern, all_names$name, ignore.case = T),]
+
+# all_names_sub <- all_names[grepl("^[bB][C-Ec-e]", all_names$lname),]
+# all_names_sub <- all_names[grepl("^[bB][Ee]nzene[^ -]", all_names$lname),]
+
+# search in one column
+tictoc::tic()
+drug_names <- sort(unique(trimws(all_names$lname)))
+intervals <- seq(1, length(drug_names), 1000)
+# this one is done for every row. might be a waste of time
+for (i in intervals) {
+  if (i != max(intervals)){
+top_i <- i+1000-1 
+  } else {
+    top_i <- length(drug_names)
+  }
+   pattern <- paste0("(?<!\\w)", paste0(substr(drug_names[i:top_i], 1, 17), collapse=".*?(?!\\w)|(?<!\\w)"), ".*?(?!\\w)") #pattern not following any word characters
+  found_matches <- regmatches(NCT_drug_trials$Intervention, gregexpr(pattern, NCT_drug_trials$Intervention, perl = T, ignore.case = T))
+bla <- lapply(found_matches, paste0, collapse = "|")
+if (i == 1){
+  old_bla <- bla
+} else {
+  old_bla <- mapply(paste, old_bla, bla, MoreArgs = list(sep = "|"), SIMPLIFY = F)
+}
+# 
+}
+tictoc::toc() 
+old_bla <- gsub("\\|{2,}", "\\|", old_bla)
+old_bla <- gsub("^\\||\\|$", "", old_bla)
+
+names(old_bla) <- NCT_drug_trials$TrialID
+# unique(unlist(old_bla))
+length(unlist(old_bla))
+sort(table(unlist(old_bla)), decreasing = T)[1:10]
+
+### Try with drugs from manual curation ####
+drug_names <- NCT_drugs$drug_names
+drug_names <- gsub('\\+|\\?|\\*|\\(|\\)|\\[|\\]|\\"|["]|[?-]|\\|', "", tolower(drug_names))
+drug_names <- gsub("^--|^-|^/--", "", drug_names)
+drug_names <- drug_names[nchar(drug_names) > 3]
+drug_names <- sort(unique(drug_names))
+# drug_names <- drug_names[-1]
+
+tictoc::tic()
+intervals <- seq(1, length(drug_names), 1000)
+for (i in intervals) {
+  if (i != max(intervals)){
+top_i <- i+1000-1 
+  } else {
+    top_i <- length(drug_names)
+  }
+      pattern <- paste0("(?<!\\w)", paste0(substr(drug_names[i:top_i], 1, 17), collapse=".*?(?!\\w)|(?<!\\w)"), ".*?(?!\\w)") #pattern not following any word characters
+found_matches <- regmatches(NCT_drug_trials$Intervention, gregexpr(pattern, NCT_drug_trials$Intervention, perl = T, ignore.case = T))
+blaa <- lapply(found_matches, paste0, collapse = "|")
+# need to join with bla from previous loop
+if (i == 1){
+  old_blaa <- blaa
+} else {
+  old_blaa <- mapply(paste, old_blaa, blaa, MoreArgs = list(sep = "|"), SIMPLIFY = F)
+}
+# 
+}
+old_blaa <- gsub("\\|{2,}", "\\|", old_blaa)
+old_blaa <- gsub("^\\||\\|$", "", old_blaa)
+
+tictoc::toc() 
+
+names(old_blaa) <- NCT_drug_trials$TrialID
+# unique(unlist(old_bla))
+length(unlist(old_blaa))
+
+# compare
+
+sort(table(unlist(old_bla)), decreasing = T)[1:10] #from katdb
+sort(table(unlist(old_blaa)), decreasing = T)[1:10] #from manual
+table(NCT_drug_trials$curated_or=="")
+
+sort(table(unlist(strsplit(unlist(old_bla), split = "\\|"))), decreasing = T)[1:10]
+sort(table(unlist(strsplit(unlist(old_blaa), split = "\\|"))), decreasing = T)[1:10]
+head(NCT_drugs[order(NCT_drugs$NCT_Freq, decreasing = T),], 10)
+
+katdb_search <- data.frame(TrialID = NCT_drug_trials$TrialID, katdb_drugs = old_bla)
+curated_search <- data.frame(TrialID = NCT_drug_trials$TrialID, curated_drugs = old_blaa)
+
+join_search <- full_join(katdb_search, curated_search)
+
+joined_search <- left_join(join_search, select(NCT_drug_trials, TrialID, curated_or, curated_or_plus, curated_or_plus_slash, Intervention))
+readr::write_csv(joined_search, paste0("CT_trials_katdb_curated", version, ".csv"))
+
+# join manually curated things with katdb
+all_names <- full_join(all_names, data.frame(lname = drug_names))
+all_names <- all_names[!grepl("^vitamin$|^vitamins$", all_names$lname),]
+all_names <- full_join(all_names, data.frame(lname = c("convalescent plasma", "plasma", "vitamin c", "vitamin d", "vitamin b")))
+
+# add extra from curation added first on 2020-09-23
+load("curated_missing_names2020-09-23.RData")
+additional_names_for_KATdb <- gsub("[().^$/]|\\+|\\?|\\*|\\(|\\)|\\[|\\][?-]|\\|", "", additional_names_for_KATdb)
+all_names <- full_join(all_names, data.frame(lname = tolower(additional_names_for_KATdb)))
+
+```
+
+```{r extract drug names all}
+
+df <- trials %>% select(TrialID, `Public title`, `Scientific title`, Intervention) %>% as.data.frame()
+
+tictoc::tic()
+drug_names <- sort(unique(trimws(all_names$lname)))
+intervals <- seq(1, length(drug_names), 1000)
+for (j in colnames(df)) {
+  tictoc::tic()
+for (i in intervals) {
+  if (i != max(intervals)){
+top_i <- i+1000-1 
+  } else {
+    top_i <- length(drug_names)
+  }
+   pattern <- paste0("(?<!\\w)", paste0(substr(drug_names[i:top_i], 1, 17), collapse=".*?(?!\\w)|(?<!\\w)"), ".*?(?!\\w)") #pattern not following any word characters -- if partial match, it extracts the full word eg. intervention = "hydroxychloroquine" and patterm = "quine" returns "hydroxychloroquine" and not only "quine"
+  found_matches <- regmatches(df[,j], gregexpr(pattern, df[,j], perl = T, ignore.case = T))
+cur <- lapply(found_matches, paste0, collapse = "|")
+if (i == 1){
+  old_cur <- cur
+} else {
+  old_cur <- mapply(paste, old_cur, cur, MoreArgs = list(sep = "|"), SIMPLIFY = F)
+}
+}
+tictoc::toc() 
+old_cur <- gsub("\\|{2,}", "\\|", old_cur)
+old_cur <- gsub("^\\||\\|$", "", old_cur)
+old_cur
+
+names(old_cur) <- df$TrialID
+
+length(unlist(old_cur))
+
+df[,j] <- old_cur
+
+}
+tictoc::toc()
+
+sort(colSums(df == ""))
+sum(rowSums(df == "") < ncol(df))
+sum(rowSums(df == "") == ncol(df))
+nrow(df)
+bad_names <- c("observational", "cancelled", "usual", "various", "gases", "biomarkers", "region", "regional", "vaccines", "experimental")
+# df <- gsub(paste0(bad_names, collapse = "|"), "", df)
+df <- t(apply(df, 1, FUN= function(x){ y <- gsub(paste0("^", paste0(bad_names,  collapse = "$|^"), "$"), "", x, ignore.case = T)
+y <- gsub("\\|{2,}", "\\|", y)
+y <- gsub("^\\||\\|$", "", y)
+return(y)
+}))
+
+head(df)
+
+df <- as.data.frame(df)
+df$TrialID <- as.character(trials$TrialID)
+colnames(df) <- trials %>% select(TrialID, `Public title`, `Scientific title`, Intervention) %>% as.data.frame() %>% colnames()
+save(df, file=paste0("text-mined-drugs-trials_", Sys.Date(), ".RData"))
+```
+
+
+
+

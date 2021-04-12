@@ -1,0 +1,24 @@
+---
+title: "combine Twitter data"
+output: html_notebook
+---
+
+
+```{r}
+#  read in all csvs from python output, manually exclude the ones not to be included. 
+tweet_files <- list.files("tweets/", pattern = "_tweets", full.names = T)
+tweet_files <- tweet_files[grepl("tweets", tweet_files)]
+
+tw_df <- read.csv(tweet_files[1])
+for ( i in tweet_files[-1]){
+  # for ( i in tail(tweet_files, 95)){
+    new_tw <- read.csv(i)
+    tw_df <- rbind(tw_df, new_tw)
+}
+
+# remove duplicates
+tw_df <- distinct(tw_df)
+
+save(tw_df, file = paste0("data/COVID_SARS_coronavirus_nCov_tweets", Sys.Date(), ".RData"))
+```
+

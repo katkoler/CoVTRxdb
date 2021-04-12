@@ -1,0 +1,247 @@
+---
+title: "clean automated data"
+output: html_notebook
+---
+
+Excessive cleaning required as the search pattern returns the whole word, so if a drug name is in a normal word, the whole word is returned as "drug" and needs to be removed.
+
+```{r setup, include=TRUE}
+library(tibble)
+library(ggplot2)
+library(dplyr)
+library(cowplot)
+library(readr)
+library(maps)
+library(mapproj)
+library(ggrepel)
+library(tidyr)
+library(lubridate)
+
+source("~/Google Drive/Documents/Kat-colors/Kat-colors.R")
+#
+
+version <- "v2020-09-04_cur"
+
+theme_set(theme_classic())
+
+```
+
+```{r}
+
+trials <- readr::read_csv("data/COVID19-web-2020-09-04.csv", 
+                          col_types = cols(`results date posted` = col_character(), 
+                                           `results url link` = col_character(),
+                                           `results yes no` = col_character()))
+
+
+# curated output of clinical_trial_drugs.Rmd
+load(paste0("data/text-mined-drugs-trials_", "2020-11-11", ".RData"))
+head(df)
+df$TrialID <- trials$TrialID
+colnames(df) <- trials %>% select(TrialID, `Public title`, `Scientific title`, Intervention) %>% as.data.frame() %>% colnames()
+
+number_of_all_trials <- nrow(trials)
+```
+
+
+```{r clean trial data}
+head(trials)
+
+# set registration date
+trials$Date <- as.Date(as.character(trials$`Date registration3`), origin = "20200127", format = "%Y%m%d")
+# keep only post Jan 1st 2020
+trials <- trials %>% 
+  filter(Date >= as.Date("2020-01-01")) 
+
+# clean target size column `Target size`
+trials$`Target size`[grepl("19", trials$`Target size`)]
+trials$size <- gsub("COVID-19|COVID-2019|(200 in each arm)", "", trials$`Target size`)
+trials$size[grepl("19", trials$size)]
+trials$size[grepl("each", trials$size)]
+trials$size <- gsub("^.*?:|;.*?:", ";", trials$size)
+
+# get trial size
+set.seed(29072020)
+x <- sample(trials$size, 100)
+x <- trials$size
+pattern <- "[0-9]{1,}"
+found_matches <- regmatches(x , gregexpr(pattern, x , perl = T, ignore.case = T))
+cur <- lapply(found_matches, paste0, collapse = "|")
+sizes <- unlist(cur)
+for (i in 1:length(sizes)){
+if (grepl("\\|", sizes[i])){
+  split_x <- strsplit(sizes[i], "\\|")
+  print(split_x)
+  sum_x <- sum(as.numeric(unlist(split_x)))
+  print(sum_x)
+  sizes[i] <- sum_x
+  }
+}
+trials$size <- as.numeric(sizes)
+head(select(trials, `Target size`, size), 50)
+
+# clean type of trial `Study design`
+trials$isRandomized <- grepl("random", trials$`Study design`, ignore.case = T)
+trials$isRandomized[trials$isRandomized] <- !grepl("Randomi[sz]ed: No|Non-randomi[sz]ed|Randomi[sz]ation: N/A|not randomi[zs]ed|Quasi-randomized", trials$`Study design`[trials$isRandomized], ignore.case = T)
+
+x <- as.data.frame(table(trials$`Study design`, trials$isRandomized))
+x <- x %>% filter(Freq != 0)
+
+
+# match country to world data from maps
+trials$Country <- trimws(sub(";.*", "", trials$Countries))
+head(sort(table(trials$Country)))
+trials$Country <- sub(",.*| \\(.*|The |n Federation", "", trials$Country)
+trials$Country <- sub("china|China\\?", "China", trials$Country)
+trials$Country <- sub("United States$", "USA", trials$Country)
+trials$Country <- sub("United Kingdom$", "UK", trials$Country)
+trials$Country <- sub("Korea$", "Korea South", trials$Country)
+trials$Country <- sub("Czechia$", "Czech Republic", trials$Country)
+# trials$Country <- sub("Serbia$", "Serbia and Montenegro", trials$Country)
+
+table(is.na(trials$Countries))
+
+number_of_all_trials_after_jan <- nrow(trials)
+
+df <- df %>% 
+  filter(df$TrialID %in% trials$TrialID)
+```
+
+
+```{r curation of katb extract}
+bad_names <- c("observational", "cancelled", "usual", "various", "gases", "biomarkers", "regions", "regional", "vaccines", "gastrointestinal", "gold", "water", "experimental", "coronavirus", "electronic", "coronavirus", "brand", "name.*\\|", "name", "favorable outcome", "glasses", "glass", "solution", "anti- antibodies", "anti- response", "anti- therapies", "anti-corona vs2 immunoglobulin", "anti-2019-ncov virus", "anti-sars-cov-2 vaccine", "antipyretic", "antitussives", "homoeopathic", "janus kinase inhibitor", "alerts","active freeze-dried", "drug combination")
+
+bad_pattern <- "chemotherapy|gastrointestinal|ace inhibitors and|anti-inflammatory|anticoagulants|anticoagulants for|antihypertensive agents|antihypertensives|antimalarials|antiviral agents|antivirals|[Aa]ustin|bacterial and viral|bioimpedence|bioinformatics|biomarker|biological factors|blood coagulation|blood transfusion|butterfly|cancelled|cardiovascular agents|cardiovascular system|cerebral|cerebrovascular|cerebrospinal|chemokines|chemoprophylaxis|chemoprophylaxistrial|chemotherapy|chemorophylaxis|colony-stimulating|coloring agents|combinations of blockade|	complement inactivator|compound will|connective tissue|constellation|contrast media|cornwall|diuretics|drugs for treatment|endocrine therapy|enzyme inhibitors|epigenetic|epigenomics|epitopes|factor and|glucocorticoids|hematopoietic stem|	hopsital|hormones|immunosuppressive|immunoregulatory|immunoreaction|immunoncovid|inflammation and|leading|limesurvey|therapy|low molecular weight|macrophage colony|magnetic resonance|neurodegeneration|neuromuscular blockade|neuromuscular blocking|neuropsychiatric symptoms|observational|other respiratory|pancreatic cancer|parenteral nutrition|pearson|peptides|prefilled|protease inhibitor|protein subunit|proteinase inhibitor|proton pump inhibitor|radiotherapy|rabbit|regimen based|region|regional|recombinant tissue|respiratory system|control|senegal|sensory organs|stimulant|therapeutic anticoagulation|tissue plasminogen|toning|trimester|tristate|utensils|vaccines|various|vitamin combining|total|varies|contractedcontract|lead|monitor|gold|excipients|contacted|university|edinburgh|hypertonic saline|supplemental|cases|case|intermediate dose|daily|^cas|saline|impacts|technology|Optimising|concordance|Immunogenicity|Monitoring|B-Cell Activating|experimental|saline50ml|nostrils|transmissonpruning|sessions|Vascular Endothelial|antiviral|teaching|Sustained Release|monitor|optimize|contacts|food|Immunogenic|minor|fasting|Combinations|transfusion|immunonutrients|nucleotides|10-20|gases|amines|techniques|unknown|teaches|measuring|roche|translational|impact|contact|Pre-operative|transmission|Transition|Impairment|Technologies|Mediators|Technical|Argentina|nostril|biochemical markers|Protein SARS|Alliance|Transplantation|electronic|coronavirus|name.*\\||name|solution|glasses|glass|brand|favourable outcome|alerts|alertness|antifungal|antifungal|antifungal|antimalarial|antimicrobials|personal protective|pruning|stamped|currently used|anti-drug|protein supplementation|standard concomitant|removable|antibiotics|waterfor|recruiting|anticoagulant|sars-cov-2|chadox1|bcg vaccine|essential oils|advance|acupoint application|alert|anti- antibodies|anti- equine|anti- response|anti- therapies|anti- virus|anti- vaccine|cough suppressant|antitussives|antipyretic|autologous adipose|autologous non-hematopoietic|bio-immune|allogeneic and expanded|allogeneic cardiosphere|washed microbiota|umbilical cord lining|prp and cord blood|specific|snowball|stating|snot|snorkel|snorkelling|snow|recombinant novel|vitamins|^cord blood|topical steroids"
+bad_pattern2 <- "anti- antibodies|anti- response|anti- therapies|anti-corona vs2 immunoglobulin|anti-2019-ncov virus|anti-sars-cov-2 vaccine|antipyretic|antitussives|homoeopathic|janus kinase inhibitor|alerts|active freeze-dried|anti- virus|anti- plasma|Anti- antibodies|Anti- equine|Anti- Response|anti-   plasma|anti- Vaccine|, a nitric drug|acetyl\\|cysteine|ala-lys|gly-gln|glu-thr|glu-gly|glu-ala|lys-pro|pro-glu|pro-trp|thr-pro|trp-tyr"
+
+bad_names3 <- c("ad5-ncov", "ad26covs1", "covalix vaccoil", "ag0302-covid19", "covid19 vaccine", "covishield", "epivaccorona vaccine", "genetically modified", "ally", "angiotensin-converting", "anti-sars cov-2 t", "s-vax loaded autologous", "b", "e", "bailing", "cardioprotective agent", "chemoprophylactic", "cho cells", "clear lung detoxification", "damp", "empathy", "empatica", "enteral nutrition", "enteral nutritional", "enzymes", "epitope", "excipient", "ffp2", "growth hormone", "hopsital", "menstrual blood", "intravenous immune", "intravenous anaesthesia", "intravenous immunoglubolin", "iodonated", "measles mumps and", "metastatic", "methylation", "nebulised recombinant", "organicell flow", "osteoporosis", "ozonated", "ozonized", "personal protection", "proton", "raas inhibitor", "ringer", "sedative", "surfactant", "vitamina", "vitamine", "menveo", "drug combination", "high-fow  by", "immunofree", "hcqprep", "phenolic", "pheol")
+
+bad_names4 <- c("ayush", "ayurved", "TCM", "traditional chinese medicine", "chinese medicine", "traditional chinese", "ayurvedic", "chinese medicines", "chinese and conventional", "chinese herbal medicine", "chinese herbal tea", "tcms", "ayurveda")
+# df <- gsub(paste0(bad_names, collapse = "|"), "", df)
+df_trialIDs <- data.frame(TrialID = df[,1])
+df <- column_to_rownames(df, "TrialID")
+df <- as.data.frame(t(apply(df[,-1], 1, FUN= function(x){ y <- gsub(paste0("^", paste0(bad_names,  collapse = "$|^"), "$"), "", x, ignore.case = T)
+y <- gsub(bad_pattern, "", y, ignore.case = T)
+y <- gsub(bad_pattern2, "", y, ignore.case = T)
+y <- gsub("\\|{2,}", "\\|", y)
+y <- gsub("^\\||\\|$", "", y)
+# y <- cbind(df_trialIDs, y)
+return(y)
+})))
+df <- rownames_to_column(df, "TrialID")
+
+
+# drugs <- apply(as.data.frame(select(df, -TrialID, -`Exclusion Criteria`, -`Inclusion Criteria`, -`Primary outcome`, -Condition)), 1, paste0,  collapse = "|")
+# drugs <- apply(as.data.frame(select(df, Intervention)), 1, paste0,  collapse = "|") #intervention only
+drugs <- apply(as.data.frame(select(df, Intervention, `Scientific title`)), 1, paste0,  collapse = "|")
+drugs <- gsub("\\|{2,}", "\\|", drugs)
+# drugs <- gsub("\\|\\|", "\\|", drugs)
+# drugs <- gsub("\\|\\|", "\\|", drugs)
+drugs <- gsub("^\\|", "", drugs)
+drugs <- stringr::str_split_fixed(drugs, "\\|", n=100)
+drugs <- drugs[, !colSums(drugs=="") == nrow(drugs)]
+drugs <- tolower(trimws(drugs))
+drugs <- gsub("usual", "", drugs)
+drugs <- gsub(paste0("^", paste0(bad_names3,  collapse = "$|^"), "$"), "", drugs, ignore.case = T)
+dim(drugs)
+drugs <- gsub(paste0("^", paste0(bad_names4,  collapse = "$|^"), "$"), "", drugs, ignore.case = T)
+dim(drugs)
+
+drugs <- t(apply(drugs, 1, FUN= function(x){x <- c(unique(x), rep("", ncol(drugs)-length(unique(x))))}))
+drugs <- drugs[, !colSums(drugs=="") == nrow(drugs)]
+dim(drugs)
+drugs[1:5, 1:5]
+
+# remove drugs that showed to be problematic during curation
+load("data/bad_names2020-09-23.RData")
+
+drugs[1:10, 1:5]
+drugs_clean <- drugs
+drugs_clean[grepl(paste0(bad_drugs, collapse = "$|^"), drugs_clean)] <- ""
+drugs_clean[1:10, 1:5]
+drugs <- drugs_clean
+
+drugss <- as.character(drugs)
+drugss <- drugss[drugss!=""]
+trial_drugs <- as.data.frame(table(drugss))
+length(drugss)
+length(unique(drugss))
+drugss <- unique(drugss)
+
+drugs_date <- data.frame(Drug = as.character(drugs), Date = rep(trials$Date, ncol(drugs)), Country = rep(trials$Country, ncol(drugs)), TrialID = rep(trials$TrialID, ncol(drugs)))
+drugs_date <- drugs_date[drugs_date$Drug != "",]
+
+drugs_list <- apply(drugs, 1, paste0,  collapse = "|")
+drugs_list <- gsub("\\|{2,}", "\\|", drugs_list)
+# drugs <- gsub("\\|\\|", "\\|", drugs)
+# drugs <- gsub("\\|\\|", "\\|", drugs)
+drugs_list <- gsub("^\\||\\|$", "", drugs_list)
+
+df$drugs <- drugs_list
+
+
+```
+
+```{r}
+# clean extracted drugs
+bad_names <- c("observational", "cancelled", "usual", "various", "gases", "biomarkers", "region", "regional", "vaccines", "gastrointestinal", "experimental", "alerts", "coronavirus", "electronic", "coronavirus", "name","	
+active freeze-dried")
+
+trial_drugs <- trial_drugs[!trial_drugs$drugss %in% bad_names,]
+trial_drugs <- trial_drugs[!grepl(bad_pattern, trial_drugs$drugss),]
+
+drugs_date <- drugs_date[!drugs_date$Drug %in% bad_names,]
+drugs_date <- drugs_date[!grepl(bad_pattern, drugs_date$Drug),]
+
+
+no_drug_trials <- df[df$drugs =="",]
+drug_trials <- df[df$drugs !="",]
+
+head(trial_drugs)
+
+drug_trials <- drug_trials %>% 
+  filter(TrialID %in% trials$TrialID) 
+
+number_of_drug_trials <- nrow(drug_trials)
+
+no_drug_trials_gg <- right_join(select(trials, TrialID, `Scientific title`, Intervention), no_drug_trials,  by = c("TrialID" = "TrialID"))
+
+df_gg <- right_join(select(trials, TrialID, `Scientific title`, Intervention), select(df, TrialID, `Scientific title`, Intervention, drugs),  by = c("TrialID" = "TrialID")) %>% 
+  mutate(hasDrug = `Scientific title.y` != "" | drugs != "" ,
+         isCombination = grepl("\\|", `Scientific title.y`) | grepl("\\|", drugs))
+
+write.csv(df_gg, paste0("data/curation_all_trials", version, ".csv"), row.names = F)
+
+table(is.na(trials$Intervention))
+table(df$Intervention == "" & df$`Scientific title` == "")
+table(df$Intervention == "")
+```
+
+```{r}
+
+save(df, file = "data/clean_trials.RData")
+
+write.table(unique(drugss), paste0("data/trial_drugs_list", version, ".tsv"), row.names = F, quote = F)
+```
+
+
+```{r eval=FALSE, include=FALSE}
+# get the new trials that aren't in the new vversion
+
+old_df_gg <- read.csv(paste0("curation_all_trials", "v2020-07-28", ".csv"))
+
+table(df_gg$TrialID %in% old_df_gg$TrialID)
+
+new_df_gg <- df_gg[!(df_gg$TrialID %in% old_df_gg$TrialID),]
+oldd_df_gg <- df_gg[(df_gg$TrialID %in% old_df_gg$TrialID),]
+
+old_df_gg[!(old_df_gg$TrialID %in% oldd_df_gg$TrialID),]
+
+nrow(old_df_gg)
+nrow(oldd_df_gg)
+nrow(new_df_gg)+nrow(old_df_gg)
+nrow(df_gg)
+
+write.csv(new_df_gg, paste0("curation_new_trials", version, ".csv"), row.names = F)
+# see if this works --- also compare if they aare the same?
+```
